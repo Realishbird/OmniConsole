@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useTabState } from "../lib/tabstate";
 import { loadData, saveData, saveText } from "../lib/backend";
 import { classifyCommands, type AuditEntry, type Classified, type Kind } from "../lib/ai";
 import { CHECKLIST_TEMPLATES, checklistText, newChecklist, type Checklist, type ItemState } from "../lib/checklists";
@@ -26,7 +27,9 @@ interface Props {
 const KIND_LABEL: Record<Kind, string> = { "read-only": "read-only", config: "configuration change", disruptive: "disruptive" };
 
 export default function DeployPanel(props: Props) {
-  const [section, setSection] = useState<DeploySection>("templates");
+  const [dp, update] = useTabState<{ section: DeploySection }>("deploy", props.tabKey, () => ({ section: "templates" }));
+  const section = dp.section;
+  const setSection = (section: DeploySection) => update({ section });
   return (
     <div className="tools-body">
       <div className="dialog-tabs small">
@@ -34,8 +37,8 @@ export default function DeployPanel(props: Props) {
           <button key={s} className={section === s ? "on" : ""} onClick={() => setSection(s)}>{s === "templates" ? "Templates" : s === "firmware" ? "Firmware" : s === "checklists" ? "Checklists" : "Audit"}</button>
         ))}
       </div>
-      {section === "templates" && <Templates {...props} />}
-      {section === "firmware" && <Firmware {...props} />}
+      {section === "templates" && <Templates key={props.tabKey} {...props} />}
+      {section === "firmware" && <Firmware key={props.tabKey} {...props} />}
       {section === "checklists" && <Checklists {...props} />}
       {section === "audit" && <Audit {...props} />}
     </div>

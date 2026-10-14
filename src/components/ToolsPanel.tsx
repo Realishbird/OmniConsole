@@ -65,15 +65,14 @@ export default function ToolsPanel(props: Props) {
   const { sessionId, tabKey, section, onSection, onClose } = props;
   const [pendingAsk, setPendingAsk] = useState<{ question: string; output: string } | null>(null);
   const [, setTick] = useState(0);
-  const stateRef = useRef<TabTools>(cache.get(tabKey) ?? fresh());
-  // switching tabs swaps the state object
-  if (!cache.has(tabKey)) cache.set(tabKey, stateRef.current);
-  if (cache.get(tabKey) !== stateRef.current) stateRef.current = cache.get(tabKey)!;
-  const st = stateRef.current;
+  // switching tabs swaps the state object; a tab seen for the first time starts fresh
+  if (!cache.has(tabKey)) cache.set(tabKey, fresh());
+  const st = cache.get(tabKey)!;
   const update = useCallback((patch: Partial<TabTools>) => {
-    Object.assign(cache.get(tabKey) ?? st, patch);
+    const target = cache.get(tabKey);
+    if (target) Object.assign(target, patch);
     setTick((t) => t + 1);
-  }, [tabKey, st]);
+  }, [tabKey]);
 
   return (
     <aside className="tools">
@@ -110,7 +109,7 @@ export default function ToolsPanel(props: Props) {
         />
       )}
       {section === "workflows" && (
-        <Workflows sessionId={sessionId} facts={st.facts} onToast={props.onToast} onAsk={(question, output) => { setPendingAsk({ question, output }); onSection("assistant"); }} />
+        <Workflows sessionId={sessionId} tabKey={tabKey} facts={st.facts} onToast={props.onToast} onAsk={(question, output) => { setPendingAsk({ question, output }); onSection("assistant"); }} />
       )}
       {section === "workstation" && <Workstation key={tabKey} defaultTarget={props.host} onToast={props.onToast} />}
       {section === "deploy" && (

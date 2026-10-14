@@ -1,20 +1,30 @@
-import { useState } from "react";
+import { useTabState } from "../lib/tabstate";
 import { runCommand, type Facts } from "../lib/tools";
 import { commandFor, INPUT_LABEL, WORKFLOWS, type Step, type Workflow } from "../lib/workflows";
 
 interface Props {
   sessionId: string | null;
+  tabKey: string;
   facts: Facts | null;
   onToast: (t: string) => void;
   onAsk: (question: string, output: string) => void;
 }
 
 /** Guided troubleshooting: run each step on the device and read the hint. */
-export default function Workflows({ sessionId, facts, onToast, onAsk }: Props) {
-  const [wf, setWf] = useState<Workflow | null>(null);
-  const [values, setValues] = useState<Record<string, string>>({});
-  const [outputs, setOutputs] = useState<Record<number, { command: string; text: string; error?: boolean }>>({});
-  const [running, setRunning] = useState<number | null>(null);
+interface WfState {
+  wf: Workflow | null;
+  values: Record<string, string>;
+  outputs: Record<number, { command: string; text: string; error?: boolean }>;
+  running: number | null;
+}
+
+export default function Workflows({ sessionId, tabKey, facts, onToast, onAsk }: Props) {
+  const [st, update] = useTabState<WfState>("workflows", tabKey, () => ({ wf: null, values: {}, outputs: {}, running: null }));
+  const { wf, values, outputs, running } = st;
+  const setWf = (wf: Workflow | null) => update({ wf });
+  const setRunning = (running: number | null) => update({ running });
+  const setValues = (f: (v: Record<string, string>) => Record<string, string>) => update({ values: f(st.values) });
+  const setOutputs = (f: (o: WfState["outputs"]) => WfState["outputs"]) => update({ outputs: f(st.outputs) });
 
   async function run(i: number, step: Step) {
     if (!sessionId || running !== null) return;
@@ -57,7 +67,7 @@ export default function Workflows({ sessionId, facts, onToast, onAsk }: Props) {
         <div className="quiet small">Step-by-step read-only checks for common problems. Each step says what to look for; the assistant can interpret any step's output.</div>
         <div className="wf-list">
           {WORKFLOWS.map((w) => (
-            <button key={w.id} className="wf-card" onClick={() => { setWf(w); setValues({}); setOutputs({}); }}>
+            <button key={w.id} className="wf-card" onClick={() => update({ wf: w, values: {}, outputs: {} })}>
               <span className="strong">{w.title}</span>
               <span className="quiet">{w.description}</span>
               <span className="quiet small">{w.steps.length} steps</span>
