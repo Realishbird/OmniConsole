@@ -5,9 +5,10 @@ import PromptDialog from "./components/PromptDialog";
 import ConfirmDialog from "./components/ConfirmDialog";
 import SettingsDialog from "./components/SettingsDialog";
 import SnippetsDialog from "./components/SnippetsDialog";
+import ToolsPanel, { type ToolsSection } from "./components/ToolsPanel";
 import CommandPalette, { type PaletteItem } from "./components/CommandPalette";
 import {
-  BookmarkIcon, CloseIcon, CommandIcon, DownIcon, Logo, PlusIcon, RecordIcon, SaveIcon, SearchIcon, SettingsIcon,
+  BookmarkIcon, ChecksIcon, CloseIcon, CommandIcon, DownIcon, Logo, PlusIcon, RecordIcon, SaveIcon, SearchIcon, SettingsIcon,
   SidebarIcon, SplitDownIcon, SplitRightIcon, UpIcon,
 } from "./components/Icons";
 import {
@@ -82,6 +83,8 @@ export default function App() {
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(() => stored("sidebarOpen", true));
   const [sidebarWidth, setSidebarWidth] = useState<number>(() => stored("sidebarWidth", 280));
+  const [toolsOpen, setToolsOpen] = useState<boolean>(() => stored("toolsOpen", false));
+  const [toolsSection, setToolsSection] = useState<ToolsSection>(() => stored("toolsSection", "checks"));
   const [devices, setDevices] = useState<Device[]>([]);
   const [snippets, setSnippets] = useState<Snippet[]>([]);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
@@ -141,6 +144,8 @@ export default function App() {
   }, [settings, settingsLoaded]);
 
   useEffect(() => store("sidebarOpen", sidebarOpen), [sidebarOpen]);
+  useEffect(() => store("toolsOpen", toolsOpen), [toolsOpen]);
+  useEffect(() => store("toolsSection", toolsSection), [toolsSection]);
   useEffect(() => store("sidebarWidth", sidebarWidth), [sidebarWidth]);
 
   const historyDirty = useRef(false);
@@ -592,6 +597,9 @@ export default function App() {
     action("history", "Search command history", () => setPalette({ initial: "", only: "History", placeholder: "Search command history" }), `${mod}+Shift+H`, !!active);
     action("clear", "Clear scrollback", () => active?.session.term.clear(), undefined, !!active);
     action("sidebar", sidebarOpen ? "Hide devices" : "Show devices", () => setSidebarOpen((v) => !v), `${mod}+Shift+B`);
+    action("tools", toolsOpen ? "Hide tools" : "Show tools (health checks, configs)", () => setToolsOpen((v) => !v), `${mod}+Shift+I`);
+    action("checks", "Run health checks", () => { setToolsSection("checks"); setToolsOpen(true); });
+    action("backup", "Back up running config", () => { setToolsSection("configs"); setToolsOpen(true); });
     action("snippets", "Manage snippets", () => setSnippetsOpen(true), `${mod}+Shift+O`);
     action("settings", "Settings", () => setSettingsOpen(true), `${mod}+,`);
     action("import", "Import devices", () => void onImport());
@@ -647,6 +655,7 @@ export default function App() {
       else if (modKey && e.shiftKey && key === "t") quickRef.current?.focus();
       else if (modKey && e.shiftKey && key === "w") activeKey && void closeTab(activeKey);
       else if (modKey && e.shiftKey && key === "b") setSidebarOpen((v) => !v);
+      else if (modKey && e.shiftKey && key === "i") setToolsOpen((v) => !v);
       else if (modKey && e.shiftKey && key === "f") openFind();
       else if (modKey && e.shiftKey && key === "c") active?.session.copySelection();
       else if (modKey && e.shiftKey && key === "v") void active?.session.pasteClipboard();
@@ -755,6 +764,9 @@ export default function App() {
           <button className="icon-btn" title={`Save output to a file (${mod}+Shift+S)`} disabled={!active} onClick={() => void saveOutput()}>
             <SaveIcon />
           </button>
+          <button className={`icon-btn${toolsOpen ? " on" : ""}`} title={`Tools: health checks and configs (${mod}+Shift+I)`} onClick={() => setToolsOpen((v) => !v)}>
+            <ChecksIcon />
+          </button>
           <button className="icon-btn" title={`Settings (${mod}+,)`} onClick={() => setSettingsOpen(true)}>
             <SettingsIcon />
           </button>
@@ -796,6 +808,7 @@ export default function App() {
           </div>
         )}
 
+        <div className="workspace">
         <div className={`panes${split ? ` split ${splitDir}` : ""}`} ref={panesBox}>
           {tabs.length === 0 && (
             <div className="welcome">
@@ -809,6 +822,7 @@ export default function App() {
                   <li><span>Split right / down</span><kbd>{mod}+Shift+D / E</kbd></li>
                   <li><span>Command history</span><kbd>{mod}+Shift+H</kbd></li>
                   <li><span>Snippets</span><kbd>{mod}+Shift+O</kbd></li>
+                  <li><span>Health checks and configs</span><kbd>{mod}+Shift+I</kbd></li>
                   <li><span>Find in output</span><kbd>{mod}+Shift+F</kbd></li>
                   <li><span>Bookmark a line</span><kbd>{mod}+Shift+M</kbd></li>
                   <li><span>Switch tab</span><kbd>Ctrl+Tab · Alt+1…9</kbd></li>
@@ -870,6 +884,22 @@ export default function App() {
             </form>
           )}
           {toast && <div className="toast" role="status">{toast}</div>}
+        </div>
+        {toolsOpen && (
+          <ToolsPanel
+            sessionId={active?.state === "connected" ? active.session.backendId : null}
+            tabKey={active?.key ?? "none"}
+            deviceName={activeDevice?.name || active?.promptInfo?.hostname || active?.title || ""}
+            site={activeDevice?.site ?? ""}
+            hostname={active?.promptInfo?.hostname ?? ""}
+            maskSecrets={settings.maskExports}
+            section={toolsSection}
+            onSection={setToolsSection}
+            onClose={() => setToolsOpen(false)}
+            onSend={(c) => active?.session.send(c + "\r")}
+            onToast={showToast}
+          />
+        )}
         </div>
 
         <div className="statusbar">

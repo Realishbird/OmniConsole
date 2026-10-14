@@ -31,8 +31,13 @@ base64 = "0.22"
 log = "0.4"
 regex = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+similar = "2"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [profile.release]
 codegen-units = 1
 lto = true
 strip = true
+
+[dev-dependencies]
+tempfile = "3"

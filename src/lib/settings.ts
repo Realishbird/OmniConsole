@@ -25,6 +25,8 @@ export interface Settings {
   logAll: boolean;
   logTimestamps: boolean;
   logDir: string;
+  /** config backups folder; empty = Documents/OmniConsole/Configs */
+  configDir: string;
   maskExports: boolean;
   warnInsecure: boolean;
   groupBy: GroupBy;
@@ -58,6 +60,7 @@ export const DEFAULT_SETTINGS: Settings = {
   logAll: false,
   logTimestamps: true,
   logDir: "",
+  configDir: "",
   maskExports: true,
   warnInsecure: true,
   groupBy: "site",

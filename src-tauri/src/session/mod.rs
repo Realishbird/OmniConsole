@@ -3,6 +3,7 @@
 //! channel and state changes / questions on an event channel.
 
 mod log;
+pub mod runner;
 mod serial;
 mod ssh;
 mod telnet;
@@ -137,6 +138,7 @@ pub struct Io {
     events: Channel<SessionEvent>,
     pending: Arc<Mutex<Option<oneshot::Sender<Option<String>>>>>,
     log: Arc<Mutex<Option<log::SessionLog>>>,
+    capture: Arc<runner::Capture>,
 }
 
 impl Io {
@@ -144,6 +146,7 @@ impl Io {
         if let Some(log) = self.log.lock().unwrap().as_mut() {
             log.feed(bytes);
         }
+        self.capture.feed(bytes);
         let _ = self.data.send(InvokeResponseBody::Raw(bytes.to_vec()));
     }
 
@@ -174,6 +177,9 @@ impl Io {
 struct Handle {
     input: mpsc::UnboundedSender<Input>,
     pending: Arc<Mutex<Option<oneshot::Sender<Option<String>>>>>,
+    capture: Arc<runner::Capture>,
+    /// one command runs at a time per session
+    busy: Arc<tokio::sync::Mutex<()>>,
 }
 
 #[derive(Default)]
@@ -193,8 +199,12 @@ impl SessionManager {
         let id = uuid::Uuid::new_v4().to_string();
         let (tx, rx) = mpsc::unbounded_channel();
         let pending = Arc::new(Mutex::new(None));
-        let io = Io { config_dir, data, events, pending: pending.clone(), log: Arc::new(Mutex::new(None)) };
-        self.sessions.lock().unwrap().insert(id.clone(), Handle { input: tx, pending });
+        let capture = Arc::new(runner::Capture::default());
+        let io = Io { config_dir, data, events, pending: pending.clone(), log: Arc::new(Mutex::new(None)), capture: capture.clone() };
+        self.sessions
+            .lock()
+            .unwrap()
+            .insert(id.clone(), Handle { input: tx, pending, capture, busy: Arc::new(tokio::sync::Mutex::new(())) });
 
         if spec.log {
             let label = if spec.label.is_empty() { describe(&spec) } else { spec.label.clone() };
@@ -243,6 +253,20 @@ impl SessionManager {
 
     pub fn resize(&self, id: &str, cols: u16, rows: u16) {
         self.send(id, Input::Resize(cols, rows));
+    }
+
+    /// Run a command on the session and return its cleaned output.
+    pub async fn run_command(&self, id: &str, command: &str, timeout: std::time::Duration) -> anyhow::Result<String> {
+        let (input, capture, busy) = {
+            let sessions = self.sessions.lock().unwrap();
+            let h = sessions.get(id).ok_or_else(|| anyhow::anyhow!("the session is closed"))?;
+            (h.input.clone(), h.capture.clone(), h.busy.clone())
+        };
+        let _guard = busy.lock().await;
+        let send = move |bytes: Vec<u8>| {
+            let _ = input.send(Input::Data(bytes));
+        };
+        runner::Runner { capture: &capture, send: &send }.run(command, timeout).await
     }
 
     pub fn send_break(&self, id: &str) {
@@ -316,7 +340,7 @@ mod tests {
         });
         let dir = std::env::temp_dir().join(format!("omni-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        let io = Io { config_dir: dir.clone(), data, events, pending, log: Arc::new(Mutex::new(None)) };
+        let io = Io { config_dir: dir.clone(), data, events, pending, log: Arc::new(Mutex::new(None)), capture: Default::default() };
         let mut spec: ConnectSpec = serde_json::from_value(serde_json::json!({
             "protocol": "ssh", "host": host, "port": port, "username": user, "cols": 100, "rows": 30,
         }))
@@ -370,7 +394,7 @@ mod tests {
         });
         let dir = std::env::temp_dir().join(format!("omni-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        let io = Io { config_dir: dir.clone(), data, events, pending, log: Arc::new(Mutex::new(None)) };
+        let io = Io { config_dir: dir.clone(), data, events, pending, log: Arc::new(Mutex::new(None)), capture: Default::default() };
         // OMNI_SSH_AUTH=agent uses the running ssh-agent instead of the key file
         let method = std::env::var("OMNI_SSH_AUTH").unwrap_or_else(|_| "key".into());
         let spec: ConnectSpec = serde_json::from_value(serde_json::json!({

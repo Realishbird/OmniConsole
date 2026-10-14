@@ -27,6 +27,18 @@ Runs on Windows (x64, ARM64), macOS (Apple Silicon, Intel) and Linux (x64, ARM64
 - Session logging to `Documents/OmniConsole/Logs/<date>/`, with optional timestamps; passwords, secrets, SNMP communities and keys are masked
 - Copy on select, right-click paste, confirmation before multi-line pastes, find in scrollback, save output or a selection to a file
 
+**Health checks** (Tools panel, Ctrl/Cmd+Shift+I)
+- Detects the platform from `show version` (IOS, IOS-XE, NX-OS, IOS-XR, ASA, Small Business SG/CBS, CatOS) and runs the right read-only `show` commands, with paging turned off for the session
+- 20 checks graded pass / warning / fail / unknown with the output lines behind each verdict and the follow-up commands to run next: system and uptime, CPU, memory, temperature, power supplies, fans, stack, redundancy, interface errors and discards, speed/duplex/err-disabled, PoE budget, VLANs and trunks, port channels, spanning tree, OSPF/BGP/EIGRP neighbors, recent log messages, CDP/LLDP neighbors, IP interfaces, MAC and ARP tables
+- Parsed tables with a filter box, a selection of which checks run, repeat every 5/15/60 minutes while the tab is open, cancel at any time
+- Save a run as a baseline and compare later runs with it; save a diagnostic bundle (zip of the summary, facts, results and every raw output) with secrets masked
+
+**Config backups**
+- Back up the running and startup config to `Documents/OmniConsole/Configs/<site>/<device>/<timestamp>_running.cfg`
+- Every new running-config backup is diffed against the previous one; diff any two backups, or a backup against the live running config, with timestamps and certificate blocks ignored
+- Search across the newest backup of every device (or every version), plain text or regular expression
+- Run any command and capture its output while it still shows in the terminal; the pager is answered for you
+
 **Security**
 - Passwords and key passphrases live in the OS credential store (Windows Credential Manager, macOS Keychain, Linux Secret Service), never in files or exports
 - Host keys are trusted on first use, with a loud warning if one changes
@@ -34,7 +46,7 @@ Runs on Windows (x64, ARM64), macOS (Apple Silicon, Intel) and Linux (x64, ARM64
 
 **Themes**: Midnight, Graphite, Nord, Dracula, Solarized Dark and Light. Fonts, size, spacing, cursor, contrast and the 16 ANSI colors are adjustable; compact and comfortable layouts.
 
-Planned next: command runner with read-only health checks, config backup with diff and search, the AI assistant (local and cloud providers, redaction, commands shown for review before anything is sent), workstation tools (ping, traceroute, DNS, port check, subnet calculator), templates and reviewed deployment with rollback, SFTP/SCP.
+Planned next: the AI assistant (local and cloud providers, redaction, commands shown for review before anything is sent), workstation tools (ping, traceroute, DNS, port check, subnet calculator), templates and reviewed deployment with rollback, SFTP/SCP.
 
 ## Shortcuts
 
@@ -46,6 +58,7 @@ Planned next: command runner with read-only health checks, config backup with di
 | Ctrl+Tab, Alt+1…9 | Switch tab |
 | Ctrl/Cmd+Shift+D / E | Split right / down (again to unsplit); F6 switches panes |
 | Ctrl/Cmd+Shift+B | Toggle sidebar |
+| Ctrl/Cmd+Shift+I | Tools panel: health checks and config backups |
 | Ctrl/Cmd+Shift+F | Find in output |
 | Ctrl/Cmd+Shift+H | Command history |
 | Ctrl/Cmd+Shift+O | Snippets |

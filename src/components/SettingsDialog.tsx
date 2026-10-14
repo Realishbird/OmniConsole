@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { logFolder, openLogFolder } from "../lib/backend";
+import { configFolder, openConfigFolder } from "../lib/tools";
 import { DEFAULT_SETTINGS, FONT_CHOICES, type AnsiKey, type CursorStyle, type Density, type Settings } from "../lib/settings";
 import { THEMES, themeById } from "../lib/themes";
 
@@ -17,12 +18,16 @@ type Section = "appearance" | "terminal" | "colors" | "logging";
 export default function SettingsDialog({ settings, onChange, onClose }: Props) {
   const [section, setSection] = useState<Section>("appearance");
   const [folder, setFolder] = useState("");
+  const [configs, setConfigs] = useState("");
   const set = <K extends keyof Settings>(key: K, value: Settings[K]) => onChange({ ...settings, [key]: value });
   const theme = themeById(settings.theme);
 
   useEffect(() => {
     void logFolder().then(setFolder);
   }, [settings.logDir]);
+  useEffect(() => {
+    void configFolder().then(setConfigs);
+  }, [settings.configDir]);
 
   function ansi(name: string, bright: boolean) {
     const key = (bright ? `bright${name[0].toUpperCase()}${name.slice(1)}` : name) as AnsiKey;
@@ -167,11 +172,17 @@ export default function SettingsDialog({ settings, onChange, onClose }: Props) {
               <button type="button" className="btn" onClick={() => void openLogFolder()}>Open</button>
             </div>
             <div className="hint">Logs always mask passwords, secrets, SNMP communities and keys. Device settings can turn logging on for single devices.</div>
+            <label>Config backups</label>
+            <div className="row">
+              <input value={settings.configDir} onChange={(e) => set("configDir", e.target.value)} placeholder={configs} spellCheck={false} />
+              <button type="button" className="btn" onClick={() => void openConfigFolder()}>Open</button>
+            </div>
+            <div className="hint">Backups are stored as taken, one folder per site and device, so they can be restored. Bundles and exports follow the masking setting above.</div>
           </div>
         )}
 
         <div className="dialog-actions">
-          <button type="button" className="btn left" onClick={() => onChange({ ...DEFAULT_SETTINGS, groupBy: settings.groupBy, logDir: settings.logDir })}>
+          <button type="button" className="btn left" onClick={() => onChange({ ...DEFAULT_SETTINGS, groupBy: settings.groupBy, logDir: settings.logDir, configDir: settings.configDir })}>
             Restore defaults
           </button>
           <button type="button" className="btn primary" onClick={onClose} autoFocus>Done</button>

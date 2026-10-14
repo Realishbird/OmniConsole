@@ -54,7 +54,8 @@ export class TerminalSession {
   readonly search: SearchAddon;
   bookmarks: Bookmark[] = [];
   private fit: FitAddon;
-  private backendId: string | null = null;
+  /** the Rust session id, once the connection is open */
+  public backendId: string | null = null;
   private opened = false;
   private disposed = false;
   private generation = 0; // output of an older connection (before reconnect) is dropped

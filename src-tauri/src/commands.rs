@@ -141,7 +141,7 @@ pub fn secret_exists(kind: String, device_id: String) -> bool {
 /*
  *  files (the dialogs open here, so the UI never chooses a path itself)
  */
-async fn pick_save(app: &AppHandle, name: &str, filter: (&str, &[&str])) -> Option<PathBuf> {
+pub(crate) async fn pick_save(app: &AppHandle, name: &str, filter: (&str, &[&str])) -> Option<PathBuf> {
     let (tx, rx) = oneshot::channel();
     app.dialog()
         .file()

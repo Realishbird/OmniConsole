@@ -42,3 +42,10 @@ export const SettingsIcon = () => <Icon><circle cx="12" cy="12" r="3" /><path d=
 export const CommandIcon = () => <Icon><path d="M4 17l6-6-6-6M12 19h8" /></Icon>;
 export const BookmarkIcon = () => <Icon><path d="M6 3h12v18l-6-4-6 4z" /></Icon>;
 export const RecordIcon = () => <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="6" fill="currentColor" /></svg>;
+export const ChecksIcon = () => <Icon><path d="M9 11l3 3L22 4" /><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" /></Icon>;
+export const StopIcon = () => <Icon><rect x="6" y="6" width="12" height="12" rx="1" /></Icon>;
+export const PlayIcon = () => <Icon><path d="M6 4l14 8-14 8z" /></Icon>;
+export const FolderIcon = () => <Icon><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /></Icon>;
+export const RefreshIcon = () => <Icon><path d="M21 12a9 9 0 1 1-2.6-6.4" /><path d="M21 3v6h-6" /></Icon>;
+export const TrashIcon = () => <Icon><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14" /></Icon>;
+export const DiffIcon = () => <Icon><path d="M7 3v12M3 7h8" /><path d="M17 9v12M13 17h8" /></Icon>;
