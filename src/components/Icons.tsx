@@ -24,10 +24,16 @@ export const ChevronIcon = ({ closed }: { closed?: boolean }) => (
 export const UpIcon = () => <Icon><path d="M18 15l-6-6-6 6" /></Icon>;
 export const DownIcon = () => <Icon><path d="M6 9l6 6 6-6" /></Icon>;
 export const Logo = () => (
-  <svg className="logo" viewBox="0 0 64 64" aria-hidden="true">
-    <rect x="2" y="2" width="60" height="60" rx="14" fill="var(--accent)" />
-    <path d="M17 22l11 10-11 10" fill="none" stroke="var(--accent-text)" strokeWidth="5" strokeLinecap="round" strokeLinejoin="round" />
-    <path d="M32 44h15" stroke="var(--accent-text)" strokeWidth="5" strokeLinecap="round" />
+  <svg className="logo" viewBox="0 0 1024 1024" aria-hidden="true">
+    <defs>
+      <linearGradient id="logo-bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stopColor="#1b2a4a" /><stop offset="1" stopColor="#0c1322" /></linearGradient>
+      <linearGradient id="logo-ring" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stopColor="#5eead4" /><stop offset="1" stopColor="#3b82f6" /></linearGradient>
+    </defs>
+    <rect x="32" y="32" width="960" height="960" rx="220" fill="url(#logo-bg)" />
+    <circle cx="512" cy="512" r="300" fill="none" stroke="url(#logo-ring)" strokeWidth="54" strokeLinecap="round" strokeDasharray="1570 316" strokeDashoffset="-160" transform="rotate(-70 512 512)" />
+    <circle cx="512" cy="212" r="46" fill="#eaf4ff" /><circle cx="772" cy="662" r="46" fill="#eaf4ff" /><circle cx="252" cy="662" r="46" fill="#eaf4ff" />
+    <path d="M400 410 L520 512 L400 614" fill="none" stroke="#eaf4ff" strokeWidth="62" strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M560 628 H660" fill="none" stroke="#5eead4" strokeWidth="62" strokeLinecap="round" />
   </svg>
 );
 export const MoreIcon = () => <Icon><circle cx="5" cy="12" r="1" /><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /></Icon>;
