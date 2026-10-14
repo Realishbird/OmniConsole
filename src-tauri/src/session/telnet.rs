@@ -172,6 +172,7 @@ pub async fn run(spec: &ConnectSpec, io: &Io, mut input: mpsc::UnboundedReceiver
                         stream.write_all(&t.naws_bytes()).await?;
                     }
                 }
+                Some(Input::Break) => stream.write_all(&[IAC, 243]).await?, // IAC BRK
                 Some(Input::Close) | None => break,
             },
         }

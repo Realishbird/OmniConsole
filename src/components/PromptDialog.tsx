@@ -17,6 +17,7 @@ export default function PromptDialog({ prompt, onAnswer }: Props) {
     : changed ? "Host key changed"
     : prompt.kind === "password" ? "Password"
     : prompt.kind === "username" ? "Username"
+    : prompt.kind === "passphrase" ? "Key passphrase"
     : "Login";
 
   function submit(e: React.FormEvent) {
@@ -44,7 +45,7 @@ export default function PromptDialog({ prompt, onAnswer }: Props) {
         <div className="dialog-actions">
           <button type="button" className="btn" onClick={() => onAnswer(null)} autoFocus={changed}>Cancel</button>
           <button type="submit" className={`btn ${changed ? "danger" : "primary"}`} autoFocus={hostKey && !changed}>
-            {prompt.kind === "hostKeyNew" ? "Trust and connect" : changed ? "Trust the new key" : "Log in"}
+            {prompt.kind === "hostKeyNew" ? "Trust and connect" : changed ? "Trust the new key" : prompt.kind === "passphrase" ? "Unlock" : "Log in"}
           </button>
         </div>
       </form>
