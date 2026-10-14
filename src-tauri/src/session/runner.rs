@@ -27,17 +27,17 @@ impl Capture {
         }
     }
 
-    fn start(&self) {
+    pub fn start(&self) {
         self.buf.lock().unwrap().clear();
         *self.active.lock().unwrap() = true;
     }
 
-    fn stop(&self) -> Vec<u8> {
+    pub fn stop(&self) -> Vec<u8> {
         *self.active.lock().unwrap() = false;
         std::mem::take(&mut *self.buf.lock().unwrap())
     }
 
-    fn text(&self) -> String {
+    pub fn text(&self) -> String {
         String::from_utf8_lossy(&self.buf.lock().unwrap()).into_owned()
     }
 }
@@ -55,7 +55,7 @@ fn more_regex() -> &'static Regex {
 }
 
 /// Remove escape sequences, carriage returns and backspaces.
-fn strip_controls(raw: &str) -> String {
+pub fn strip_controls(raw: &str) -> String {
     static ESC: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
     let esc = ESC.get_or_init(|| Regex::new(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b[()][A-Za-z0-9]|\x1b[=>]").unwrap());
     let text = esc.replace_all(raw, "");
@@ -216,8 +216,8 @@ impl Runner<'_> {
         let raw = String::from_utf8_lossy(&self.capture.stop()).into_owned();
         result?;
         let text = clean(&raw);
-        if text.contains("% Invalid input") || text.contains("% Incomplete command") || text.contains("% Ambiguous command") {
-            bail!("the device rejected `{command}`");
+        if let Some(line) = text.lines().map(str::trim).find(|l| l.starts_with("% Invalid input") || l.starts_with("% Incomplete command") || l.starts_with("% Ambiguous command") || l.starts_with("% Unknown command") || l.starts_with("% Unrecognized command")) {
+            bail!("the device rejected `{command}`: {line}");
         }
         Ok(trim_echo_and_prompt(&text, command))
     }

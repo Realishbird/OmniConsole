@@ -42,8 +42,10 @@ interface Review {
   items: Classified[];
   kind: Kind;
   state: "proposed" | "running" | "done" | "failed" | "dismissed";
-  outputs: { command: string; output: string }[];
+  outputs: { command: string; output: string; error?: boolean }[];
   backup: string | null;
+  /** how many automatic follow-ups led here (bounded, so a wrong command cannot loop forever) */
+  depth: number;
 }
 
 interface TabAi {
@@ -82,7 +84,7 @@ export default function Assistant(props: Props) {
 
   const ctx = (output: string, outputLabel: string): Context => ({ facts, hostname, environment, report, output, outputLabel, settings: ai });
 
-  async function ask(question: string, output = "", outputLabel = "Terminal output") {
+  async function ask(question: string, output = "", outputLabel = "Terminal output", depth = 0) {
     if (!provider) {
       onToast("Add an AI provider in Settings → Assistant first");
       onOpenSettings();
@@ -112,7 +114,7 @@ export default function Assistant(props: Props) {
         reply.blocks = await Promise.all(blocks.map(async (b) => {
           const items = await classifyCommands(b.commands);
           const kind: Kind = items.some((i) => i.kind === "disruptive") ? "disruptive" : items.some((i) => i.kind === "config") ? "config" : "read-only";
-          return { title: b.title, items, kind, state: "proposed" as const, outputs: [], backup: null };
+          return { title: b.title, items, kind, state: "proposed" as const, outputs: [], backup: null, depth };
         }));
       }
     } catch (e) {
@@ -159,6 +161,7 @@ export default function Assistant(props: Props) {
     const commands = review.items.map((i) => i.command);
     let result: AuditEntry["result"] = "sent";
     let note = "";
+    const rejected: string[] = [];
     try {
       if (withBackup && review.kind !== "read-only") {
         const saved = await backupConfig(sessionId, facts?.os ?? null, site, facts?.hostname || deviceName, ["running"]);
@@ -166,22 +169,48 @@ export default function Assistant(props: Props) {
         refresh();
       }
       for (const command of commands) {
-        const output = await runCommand(sessionId, command, 120);
-        review.outputs.push({ command, output });
-        refresh();
+        try {
+          const output = await runCommand(sessionId, command, 120);
+          review.outputs.push({ command, output });
+        } catch (e) {
+          // a rejected show command is not a reason to skip the rest; a
+          // rejected configuration line is, since later lines may depend on it
+          const msg = String(e);
+          review.outputs.push({ command, output: msg, error: true });
+          rejected.push(`${command}\n${msg}`);
+          if (review.kind !== "read-only" || !/rejected/.test(msg)) throw e;
+        } finally {
+          refresh();
+        }
       }
-      review.state = "done";
+      review.state = rejected.length ? "failed" : "done";
     } catch (e) {
       review.state = "failed";
       result = "failed";
       note = String(e);
-      review.outputs.push({ command: "", output: `Stopped: ${note}` });
     }
     refresh();
     if (review.kind !== "read-only") {
       void audit({ time: Math.floor(Date.now() / 1000), device: facts?.hostname || deviceName, environment, kind: review.kind, commands, backup: review.backup, result, note });
       onToast(result === "sent" ? `Applied ${commands.length} line${commands.length === 1 ? "" : "s"}${review.backup ? " (backup saved first)" : ""}` : `Stopped: ${note}`);
     }
+    // the assistant looks at what came back on its own: it corrects commands
+    // the device rejected and interprets the rest, a few rounds at most
+    if (review.depth < 3 && review.outputs.length > 0) void followUp(review);
+  }
+
+  function outputsText(review: Review) {
+    return review.outputs.map((o) => `${o.command}\n${o.output || "(no output)"}`).join("\n\n");
+  }
+
+  async function followUp(review: Review) {
+    const bad = review.outputs.filter((o) => o.error);
+    const question = bad.length
+      ? `The device rejected ${bad.length === 1 ? "this command" : "these commands"}: ${bad.map((o) => `\`${o.command}\``).join(", ")}. Give the corrected command for this exact OS and version in a new \`cli\` block (or say it does not exist here and what to use instead), then interpret the output that did come back.`
+      : review.kind === "read-only"
+        ? "Here is the output of the commands you proposed. Interpret it: what it confirms, what it rules out, and the next command if one is needed."
+        : "The configuration was applied; here is what the device printed. Confirm it took effect from the output and propose the show command that verifies it.";
+    await ask(question, outputsText(review), "Command output", review.depth + 1);
   }
 
   const canRun = !!sessionId;
@@ -231,7 +260,7 @@ export default function Assistant(props: Props) {
         )}
         {st.turns.map((t, ti) => (
           <div key={ti} className={`turn ${t.role}`}>
-            {t.role === "user" ? <pre className="user-text">{t.content.split("\n\n")[0]}{t.content.includes("```") ? "\n(with terminal output)" : ""}</pre> : (
+            {t.role === "user" ? <pre className="user-text">{t.content.split("\n\n")[0]}{t.content.includes("```") ? <span className="quiet"> · with output</span> : ""}</pre> : (
               <>
                 <Markdown text={t.content || (t.streaming ? "…" : "")} />
                 {t.redacted ? <div className="quiet small">{t.redacted} secret{t.redacted === 1 ? "" : "s"} redacted before sending</div> : null}
@@ -245,7 +274,7 @@ export default function Assistant(props: Props) {
                     </div>
                     <ol className="review-lines">
                       {b.items.map((it, k) => (
-                        <li key={k} className={it.kind}><code>{it.command}</code><span className="quiet"> {it.reason}</span></li>
+                        <li key={k} className={it.kind}><code>{it.command}</code><span className="reason">{it.reason}</span></li>
                       ))}
                     </ol>
                     {b.state === "proposed" && (
@@ -289,12 +318,12 @@ export default function Assistant(props: Props) {
                     {b.outputs.length > 0 && (
                       <details className="raw" open={b.state === "failed"}>
                         <summary>{b.state === "failed" ? "Stopped with an error" : "Output"}{b.backup ? " · backup saved" : ""}</summary>
-                        {b.outputs.map((o, k) => <pre key={k}>{o.command ? `${o.command}\n` : ""}{o.output || "(no output)"}</pre>)}
+                        {b.outputs.map((o, k) => <pre key={k} className={o.error ? "rejected" : ""}>{o.command ? `${o.command}\n` : ""}{o.output || "(no output)"}</pre>)}
                       </details>
                     )}
-                    {b.state === "done" && b.outputs.length > 0 && (
+                    {(b.state === "done" || b.state === "failed") && b.outputs.length > 0 && b.depth >= 3 && (
                       <div className="row">
-                        <button className="btn small" onClick={() => void ask("Here is the output of the commands you proposed. Interpret it.", b.outputs.map((o) => `${o.command}\n${o.output}`).join("\n\n"), "Command output")} disabled={!!busy}>Ask about this output</button>
+                        <button className="btn small" onClick={() => void followUp(b)} disabled={!!busy}>Ask about this output</button>
                       </div>
                     )}
                   </div>

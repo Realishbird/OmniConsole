@@ -429,15 +429,18 @@ label.check { display: inline-flex; gap: 6px; align-items: center; cursor: point
 button.link { background: none; border: 0; color: var(--accent); cursor: pointer; font: inherit; padding: 0; }
 .assistant { gap: 8px; }
 .chat { flex: 1; display: flex; flex-direction: column; gap: 10px; min-height: 120px; }
-.turn.user .user-text { margin: 0 0 0 40px; padding: 8px 12px; border-radius: 12px 12px 4px 12px; background: color-mix(in srgb, var(--accent) 14%, transparent); white-space: pre-wrap; font: inherit; font-size: 12.5px; }
-.turn.assistant { font-size: 13px; line-height: 1.5; }
-.md p { margin: 0 0 8px; }
-.md ul, .md ol { margin: 0 0 8px; padding-left: 20px; }
-.md .md-h { font-weight: 600; margin: 10px 0 4px; }
+.turn.user { display: flex; justify-content: flex-end; }
+.turn.user .user-text { margin: 0 0 0 40px; max-width: 100%; padding: 8px 12px; border-radius: 12px 12px 4px 12px; background: color-mix(in srgb, var(--accent) 14%, transparent); white-space: pre-wrap; word-break: break-word; font: inherit; font-size: 12.5px; line-height: 1.45; }
+.turn.assistant { font-size: 13px; line-height: 1.5; display: flex; flex-direction: column; gap: 8px; }
+.md { display: flex; flex-direction: column; gap: 6px; }
+.md p, .md ul, .md ol, .md .md-code { margin: 0; }
+.md ul, .md ol { padding-left: 20px; display: flex; flex-direction: column; gap: 2px; }
+.md .md-h { font-weight: 600; margin: 6px 0 0; }
+.md > .md-h:first-child { margin-top: 0; }
 .md code, .review-lines code, .wf-step-head code { font: 11.5px ui-monospace, Menlo, Consolas, monospace; background: var(--hover); padding: 1px 4px; border-radius: 3px; }
 .md .md-code { margin: 0 0 8px; padding: 8px 10px; border-radius: 6px; background: var(--hover); font: 11.5px ui-monospace, Menlo, Consolas, monospace; white-space: pre-wrap; word-break: break-word; }
 .md .md-code.cli { opacity: 0.6; }
-.review { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin: 6px 0; background: var(--bg); display: flex; flex-direction: column; gap: 8px; font-size: 12.5px; }
+.review { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin: 0; background: var(--bg); display: flex; flex-direction: column; gap: 8px; font-size: 12.5px; line-height: 1.45; }
 .review.config { border-color: color-mix(in srgb, var(--warn) 55%, var(--border)); }
 .review.disruptive { border-color: color-mix(in srgb, var(--bad) 60%, var(--border)); }
 .review.done { opacity: 0.9; }
@@ -445,7 +448,14 @@ button.link { background: none; border: 0; color: var(--accent); cursor: pointer
 .kind-chip { padding: 1px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; background: color-mix(in srgb, var(--good) 18%, transparent); color: var(--good); white-space: nowrap; }
 .kind-chip.config { background: color-mix(in srgb, var(--warn) 20%, transparent); color: var(--warn); }
 .kind-chip.disruptive { background: color-mix(in srgb, var(--bad) 18%, transparent); color: var(--bad); }
-.review-lines { margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 3px; }
+.review-lines { margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 4px; }
+.review-lines li { padding-left: 2px; }
+.review-lines li code { white-space: pre-wrap; word-break: break-word; }
+.review-lines li .reason { display: inline-block; margin-left: 8px; color: var(--text-quiet); font-size: 11.5px; }
+.review .quiet.small { line-height: 1.4; }
+.review .raw { display: flex; flex-direction: column; gap: 6px; }
+.review .raw pre { margin: 0; }
+.review .raw pre.rejected { border-left: 3px solid var(--bad); }
 .review-lines li.disruptive code { color: var(--bad); }
 .review-lines li.config code { color: var(--warn); }
 .review .row, .wf-inputs, .ws-form, .confirm .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
