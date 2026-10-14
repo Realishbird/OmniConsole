@@ -52,6 +52,20 @@ Runs on Windows (x64, ARM64), macOS (Apple Silicon, Intel) and Linux (x64, ARM64
 **Guided troubleshooting**
 - Step-by-step read-only workflows for tracing a device by IP/MAC to its port (and the neighbor behind it), DHCP, DNS, VLAN, trunking, spanning tree, routing, ACL, wireless and authentication; each step says what to look for and can be handed to the assistant
 
+**Templates and reviewed deployment** (Tools panel → Deploy)
+- Nine templates with typed, validated variables: access, access point, camera, voice, trunk, uplink and port-channel ports, VLAN with SVI, and an initial setup for a new switch (hostname, management SVI and VRF, gateway, DNS, NTP, SSH, local admin, logging, SNMPv3, banner); rendered for IOS or NX-OS
+- Every deployment shows the exact lines, backs up the running config, saves a rollback point on the device (`copy running-config flash:` with `configure replace`, or an NX-OS checkpoint), optionally arms `reload in N` as a safety net, sends line by line with progress, stops at the first rejected line, runs verify commands, then lets you save, roll back, or cancel the reload
+- Production devices stay locked until unlocked per tab; disruptive lines need the device name typed; every change is recorded in the audit trail
+
+**Firmware assistant**
+- Reads the current version, image, boot variable, free flash and stack members, checks the new image's platform family, storage and checksum, and proposes transfer (tftp/ftp/scp/sftp/http/usb), MD5 verification, activation (boot variable, `install add … activate commit`, or NX-OS `install all`) and post-upgrade validation as separate reviewed steps; the reload is always explicit
+
+**Operations**
+- Installation, cutover and upgrade checklists with a recorded result and note per item, saved per device and exportable
+- Broadcast a command to selected connected sessions (Ctrl/Cmd+Shift+L) with a prominent red bar, explicit target selection and a confirmation that names production targets
+- Audit trail of every configuration change sent, with lines, result and backup path
+- Telnet and serial auto-login with the saved username and password
+
 **Security**
 - Passwords and key passphrases live in the OS credential store (Windows Credential Manager, macOS Keychain, Linux Secret Service), never in files or exports
 - Host keys are trusted on first use, with a loud warning if one changes
@@ -59,7 +73,7 @@ Runs on Windows (x64, ARM64), macOS (Apple Silicon, Intel) and Linux (x64, ARM64
 
 **Themes**: Midnight, Graphite, Nord, Dracula, Solarized Dark and Light. Fonts, size, spacing, cursor, contrast and the 16 ANSI colors are adjustable; compact and comfortable layouts.
 
-Planned next: templates and reviewed deployment with rollback, firmware upgrades, broadcast to several sessions, an audit trail viewer, SFTP/SCP.
+Planned next: SFTP/SCP file transfer, detachable windows, RDP/VNC, command autocomplete.
 
 ## Shortcuts
 
@@ -73,6 +87,7 @@ Planned next: templates and reviewed deployment with rollback, firmware upgrades
 | Ctrl/Cmd+Shift+B | Toggle sidebar |
 | Ctrl/Cmd+Shift+I | Tools panel: checks, workflows, configs, workstation tools |
 | Ctrl/Cmd+Shift+A | Assistant |
+| Ctrl/Cmd+Shift+L | Broadcast to sessions |
 | Ctrl/Cmd+Shift+F | Find in output |
 | Ctrl/Cmd+Shift+H | Command history |
 | Ctrl/Cmd+Shift+O | Snippets |

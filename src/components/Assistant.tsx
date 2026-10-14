@@ -4,6 +4,7 @@ import {
   aiCancel, aiChat, classifyCommands, commandBlocks, QUICK_ACTIONS, systemPrompt, userTurn, type AiSettings, type AuditEntry,
   type ChatMessage, type Classified, type Context, type Kind,
 } from "../lib/ai";
+import { isUnlocked, lock, unlock } from "../lib/lock";
 import { backupConfig, runCommand, type CheckReport, type Facts } from "../lib/tools";
 import { CloseIcon, StopIcon } from "./Icons";
 import Markdown from "./Markdown";
@@ -47,7 +48,6 @@ interface Review {
 
 interface TabAi {
   turns: Turn[];
-  productionUnlocked: boolean;
 }
 
 const cache = new Map<string, TabAi>();
@@ -62,7 +62,7 @@ export default function Assistant(props: Props) {
   const [confirming, setConfirming] = useState<{ turn: number; block: number; backup: boolean; reviewed: boolean; typed: string } | null>(null);
   const [unlockTyped, setUnlockTyped] = useState<string | null>(null);
   const bottom = useRef<HTMLDivElement>(null);
-  if (!cache.has(tabKey)) cache.set(tabKey, { turns: [], productionUnlocked: false });
+  if (!cache.has(tabKey)) cache.set(tabKey, { turns: [] });
   const st = cache.get(tabKey)!;
   const refresh = () => setTick((t) => t + 1);
   const provider = ai.providers.find((p) => p.id === ai.activeId) ?? ai.providers[0];
@@ -195,8 +195,8 @@ export default function Assistant(props: Props) {
         ))}
         <span className="grow" />
         {production && (
-          st.productionUnlocked ? (
-            <button className="btn small warn-text" title="Lock configuration changes on this production device again" onClick={() => { st.productionUnlocked = false; refresh(); }}>Production unlocked · lock</button>
+          isUnlocked(tabKey) ? (
+            <button className="btn small warn-text" title="Lock configuration changes on this production device again" onClick={() => { lock(tabKey); refresh(); }}>Production unlocked · lock</button>
           ) : (
             <button className="btn small" title="Configuration changes on production devices are locked until you unlock this tab" onClick={() => setUnlockTyped("")}>Production locked</button>
           )
@@ -218,7 +218,7 @@ export default function Assistant(props: Props) {
           <input autoFocus value={unlockTyped} onChange={(e) => setUnlockTyped(e.target.value)} spellCheck={false} />
           <div className="row">
             <button className="btn" onClick={() => setUnlockTyped(null)}>Cancel</button>
-            <button className="btn primary" disabled={unlockTyped.trim() !== (facts?.hostname || deviceName)} onClick={() => { st.productionUnlocked = true; setUnlockTyped(null); refresh(); }}>Unlock for this tab</button>
+            <button className="btn primary" disabled={unlockTyped.trim() !== (facts?.hostname || deviceName)} onClick={() => { unlock(tabKey); setUnlockTyped(null); refresh(); }}>Unlock for this tab</button>
           </div>
         </div>
       )}
@@ -261,7 +261,7 @@ export default function Assistant(props: Props) {
                     )}
                     {confirming && confirming.turn === ti && confirming.block === bi && (
                       <div className="confirm">
-                        {production && !st.productionUnlocked ? (
+                        {production && !isUnlocked(tabKey) ? (
                           <p className="warn-text">This is a production device. Unlock configuration changes for this tab first (button at the top), then come back here.</p>
                         ) : (
                           <>
@@ -277,7 +277,7 @@ export default function Assistant(props: Props) {
                           <button className="btn small" onClick={() => setConfirming(null)}>Cancel</button>
                           <button
                             className="btn small danger-fill"
-                            disabled={!canRun || (production && !st.productionUnlocked) || !confirming.reviewed || (b.kind === "disruptive" && confirming.typed.trim() !== (facts?.hostname || deviceName))}
+                            disabled={!canRun || (production && !isUnlocked(tabKey)) || !confirming.reviewed || (b.kind === "disruptive" && confirming.typed.trim() !== (facts?.hostname || deviceName))}
                             onClick={() => void run(ti, bi, confirming.backup)}
                           >
                             Apply {b.items.length} line{b.items.length === 1 ? "" : "s"}

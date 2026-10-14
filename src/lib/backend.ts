@@ -24,7 +24,7 @@ export const listSerialPorts = () => invoke<SerialPortInfo[]>("serial_ports");
 export const loadDevices = () => invoke<Device[]>("devices_load");
 export const saveDevices = (devices: Device[]) => invoke("devices_save", { devices });
 
-export type DataKind = "snippets" | "history" | "settings" | "workspace" | "audit";
+export type DataKind = "snippets" | "history" | "settings" | "workspace" | "audit" | "checklists";
 export const loadData = <T,>(kind: DataKind) => invoke<T | null>("data_load", { kind });
 export const saveData = (kind: DataKind, value: unknown) => invoke("data_save", { kind, value });
 

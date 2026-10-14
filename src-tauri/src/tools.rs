@@ -46,6 +46,10 @@ impl ToolState {
     }
 }
 
+pub fn config_root_pub(app: &AppHandle) -> PathBuf {
+    config_root(app)
+}
+
 /// settings.json "configDir", or Documents/OmniConsole/Configs
 fn config_root(app: &AppHandle) -> PathBuf {
     store::config_dir(app)

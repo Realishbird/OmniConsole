@@ -38,6 +38,8 @@ export interface Device {
 
   autoReconnect: boolean;
   logSession: boolean;
+  /** Telnet and serial: answer the Username/Password questions */
+  autoLogin: boolean;
 }
 
 export interface JumpSpec {
@@ -57,6 +59,7 @@ export interface ConnectSpec {
   username: string;
   deviceId?: string;
   password?: string;
+  autoLogin?: boolean;
   authMethod: AuthMethod;
   keyPath: string;
   jump?: JumpSpec | null;
@@ -143,6 +146,7 @@ export function newDevice(protocol: Protocol = "ssh", site = ""): Device {
     flowControl: "none",
     autoReconnect: false,
     logSession: false,
+    autoLogin: false,
   };
 }
 

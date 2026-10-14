@@ -4,6 +4,7 @@
 mod ai;
 mod cisco;
 mod commands;
+mod deploy;
 mod nettools;
 mod redact;
 mod session;
@@ -68,6 +69,13 @@ pub fn run() {
             ai::ai_models,
             ai::ai_chat,
             ai::ai_cancel,
+            deploy::templates_list,
+            deploy::template_render,
+            deploy::deploy_run,
+            deploy::deploy_finish,
+            deploy::deploy_rollback,
+            deploy::firmware_inspect,
+            deploy::firmware_plan,
         ])
         .run(tauri::generate_context!())
         .expect("error while running OmniConsole");

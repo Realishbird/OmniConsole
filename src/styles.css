@@ -489,3 +489,39 @@ button.link { background: none; border: 0; color: var(--accent); cursor: pointer
 .wf-step-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .wf-look { color: var(--text-quiet); font-size: 12px; }
 .wf-steps pre { margin: 0; padding: 8px 10px; border-radius: 6px; background: var(--hover); font: 11.5px ui-monospace, Menlo, Consolas, monospace; white-space: pre-wrap; word-break: break-word; max-height: 300px; overflow: auto; }
+
+/* ---- deploy, checklists, audit ---- */
+.review.flow { margin: 0; }
+.tpl-form { grid-template-columns: 150px 1fr; }
+.tpl-form .field { display: flex; flex-direction: column; gap: 3px; }
+.tpl-form .field .hint { grid-column: auto; margin: 0; font-size: 11.5px; }
+.tpl-form input.invalid { border-color: var(--bad); }
+.check-head.static { cursor: default; }
+.check-head.static:hover { background: transparent; }
+.check-summary.wrap { white-space: normal; }
+.fw-stages { display: flex; gap: 6px; flex-wrap: wrap; }
+.fw-stages .btn.on { border-color: var(--accent); color: var(--accent); }
+.btn.danger { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 50%, var(--border)); }
+.cl-items { margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; }
+.cl-items li { border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px; background: var(--bg); display: flex; flex-direction: column; gap: 5px; }
+.cl-items li.done { border-color: color-mix(in srgb, var(--good) 45%, var(--border)); }
+.cl-items li.done .cl-text { text-decoration: line-through; color: var(--text-quiet); }
+.cl-items li.failed { border-color: color-mix(in srgb, var(--bad) 55%, var(--border)); }
+.cl-items li.skipped .cl-text { color: var(--text-quiet); }
+.cl-head { display: flex; align-items: center; gap: 8px; }
+.cl-text { flex: 1; }
+.cl-note { height: 26px; font-size: 12px; }
+.segmented.small button { padding: 2px 8px; font-size: 11.5px; }
+.audit { display: flex; flex-direction: column; border-radius: 6px; }
+.audit pre { margin: 0 6px 6px; padding: 8px 10px; border-radius: 6px; background: var(--hover); font: 11.5px ui-monospace, Menlo, Consolas, monospace; white-space: pre-wrap; }
+
+/* ---- broadcast ---- */
+.broadcast {
+  display: flex; align-items: center; gap: 10px; padding: 6px 10px; flex-wrap: wrap;
+  background: color-mix(in srgb, var(--bad) 14%, var(--bg)); border-bottom: 2px solid var(--bad);
+}
+.broadcast-label { font-weight: 800; letter-spacing: 0.12em; color: var(--bad); font-size: 12px; }
+.broadcast-targets { display: flex; gap: 10px; flex-wrap: wrap; font-size: 12px; }
+.broadcast-form { flex: 1; display: flex; gap: 6px; min-width: 260px; }
+.broadcast-form input { flex: 1; height: 28px; font-family: ui-monospace, Menlo, Consolas, monospace; }
+.bc-badge { font-size: 9px; font-weight: 800; padding: 0 4px; border-radius: 3px; background: var(--bad); color: #fff; }

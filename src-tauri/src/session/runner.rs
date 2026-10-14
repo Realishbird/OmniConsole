@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, bail, Result};
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
 
 /// Shared between the session task (which feeds output) and the runner.
@@ -125,6 +126,38 @@ fn trim_echo_and_prompt(text: &str, command: &str) -> String {
     lines[start..].join("\n").trim_matches('\n').to_string()
 }
 
+/// How to answer the questions a command asks (`[confirm]`, `[yes/no]`,
+/// `Destination filename [x]?`). Only reviewed deployments use this.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct Answers {
+    /// "yes" or "no" for [yes/no] questions (saving before a reload, for one)
+    pub yes_no: YesNo,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum YesNo {
+    Yes,
+    No,
+}
+
+fn question_regex() -> &'static Regex {
+    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"(?i)(\[confirm\]\s*$|\[yes/no\]:?\s*$|\(yes/no\)\??\s*\[?\w*\]?:?\s*$|\[y/n\]:?\s*$|\(y/n\)\??\s*\[?\w*\]?:?\s*$|\[[^\]]*\]\?\s*$|\?\s*$)").unwrap())
+}
+
+/// The answer to a question line, with a trailing CR.
+fn answer_for(line: &str, answers: Answers) -> Vec<u8> {
+    let l = line.to_lowercase();
+    if l.contains("[yes/no]") || l.contains("(yes/no)") {
+        match answers.yes_no { YesNo::Yes => b"yes\r".to_vec(), YesNo::No => b"no\r".to_vec() }
+    } else if l.contains("[y/n]") || l.contains("(y/n)") {
+        match answers.yes_no { YesNo::Yes => b"y\r".to_vec(), YesNo::No => b"n\r".to_vec() }
+    } else {
+        b"\r".to_vec()
+    }
+}
+
 pub struct Runner<'a> {
     pub capture: &'a Arc<Capture>,
     pub send: &'a (dyn Fn(Vec<u8>) + Send + Sync),
@@ -134,11 +167,17 @@ impl Runner<'_> {
     /// Send `command` and wait for the prompt. `timeout` bounds the whole
     /// command; a device that keeps printing resets the quiet timer.
     pub async fn run(&self, command: &str, timeout: Duration) -> Result<String> {
+        self.run_with(command, timeout, None).await
+    }
+
+    /// `run`, answering the command's questions when `answers` is given.
+    pub async fn run_with(&self, command: &str, timeout: Duration, answers: Option<Answers>) -> Result<String> {
         self.capture.start();
         (self.send)(format!("{}\r", command.trim()).into_bytes());
         let deadline = tokio::time::Instant::now() + timeout;
         let mut quiet_since = tokio::time::Instant::now();
         let mut seen_len = 0usize;
+        let mut answered_at = 0usize;
         let result = loop {
             let text = self.capture.text();
             if text.len() != seen_len {
@@ -151,6 +190,15 @@ impl Runner<'_> {
                     (self.send)(b" ".to_vec());
                 } else if tail.lines().last().is_some_and(|l| prompt_regex().is_match(l.trim_end())) && text.contains('\n') {
                     break Ok(());
+                }
+            } else if let (Some(a), true) = (answers, quiet_since.elapsed() > Duration::from_millis(700) && seen_len > answered_at) {
+                // the device went quiet on a question: answer it once
+                let tail = strip_controls(&text);
+                let last = tail.lines().last().unwrap_or("").trim_end();
+                if question_regex().is_match(last) && !prompt_regex().is_match(last) {
+                    (self.send)(answer_for(last, a));
+                    answered_at = seen_len;
+                    quiet_since = tokio::time::Instant::now();
                 }
             } else if quiet_since.elapsed() > Duration::from_millis(2500) {
                 // no prompt seen but the device went quiet (a prompt we do not recognize)
@@ -194,6 +242,35 @@ mod tests {
         for p in ["Password:", "Building configuration...", "% Invalid input detected at '^' marker."] {
             assert!(!prompt_regex().is_match(p), "{p}");
         }
+    }
+
+    #[test]
+    fn questions_and_answers() {
+        for q in ["Destination filename [running-config]?", "Proceed with reload? [confirm]", "System configuration has been modified. Save? [yes/no]:", "Do you want to continue? (y/n) [n]", "Delete flash:/old.bin? [confirm]"] {
+            assert!(question_regex().is_match(q), "{q}");
+            assert!(!prompt_regex().is_match(q), "{q}");
+        }
+        assert!(!question_regex().is_match("sw1#"));
+        assert_eq!(answer_for("Save? [yes/no]:", Answers { yes_no: YesNo::No }), b"no\r");
+        assert_eq!(answer_for("continue? (y/n) [n]", Answers { yes_no: YesNo::Yes }), b"y\r");
+        assert_eq!(answer_for("Destination filename [x]?", Answers { yes_no: YesNo::Yes }), b"\r");
+    }
+
+    #[tokio::test]
+    async fn answers_a_question() {
+        let capture = Arc::new(Capture::default());
+        let cap = capture.clone();
+        let send = move |bytes: Vec<u8>| {
+            let cap = cap.clone();
+            if bytes == b"\r" {
+                tokio::spawn(async move { cap.feed(b"\r\nBuilding configuration...\r\n[OK]\r\nsw1#") });
+            } else {
+                tokio::spawn(async move { cap.feed(b"copy run flash:x.cfg\r\nDestination filename [x.cfg]? ") });
+            }
+        };
+        let runner = Runner { capture: &capture, send: &send };
+        let out = runner.run_with("copy run flash:x.cfg", Duration::from_secs(5), Some(Answers { yes_no: YesNo::Yes })).await.unwrap();
+        assert!(out.contains("[OK]"), "{out}");
     }
 
     #[tokio::test]

@@ -3,6 +3,7 @@ import { ChecksIcon, CloseIcon, DiffIcon, FolderIcon, PlayIcon, RefreshIcon, Sav
 import Assistant from "./Assistant";
 import Workstation from "./Workstation";
 import Workflows from "./Workflows";
+import DeployPanel from "./DeployPanel";
 import type { AiSettings } from "../lib/ai";
 import {
   backupConfig, bundleFiles, cancelChecks, checksCatalog, compareReports, deleteConfig, detectDevice, diffConfigs, fileStamp,
@@ -11,7 +12,7 @@ import {
   type CheckResult, type DiffResult, type Facts, type SearchHit, type Status, type Table,
 } from "../lib/tools";
 
-export type ToolsSection = "checks" | "configs" | "assistant" | "workstation" | "workflows";
+export type ToolsSection = "checks" | "configs" | "assistant" | "workstation" | "workflows" | "deploy";
 
 
 interface Props {
@@ -82,6 +83,7 @@ export default function ToolsPanel(props: Props) {
           <button className={section === "checks" ? "on" : ""} onClick={() => onSection("checks")}>Checks</button>
           <button className={section === "workflows" ? "on" : ""} onClick={() => onSection("workflows")}>Workflows</button>
           <button className={section === "configs" ? "on" : ""} onClick={() => onSection("configs")}>Configs</button>
+          <button className={section === "deploy" ? "on" : ""} onClick={() => onSection("deploy")}>Deploy</button>
           <button className={section === "workstation" ? "on" : ""} onClick={() => onSection("workstation")}>Workstation</button>
         </div>
         <button className="icon-btn" title="Close tools" onClick={onClose}><CloseIcon /></button>
@@ -111,6 +113,18 @@ export default function ToolsPanel(props: Props) {
         <Workflows sessionId={sessionId} facts={st.facts} onToast={props.onToast} onAsk={(question, output) => { setPendingAsk({ question, output }); onSection("assistant"); }} />
       )}
       {section === "workstation" && <Workstation key={tabKey} defaultTarget={props.host} onToast={props.onToast} />}
+      {section === "deploy" && (
+        <DeployPanel
+          sessionId={sessionId}
+          tabKey={tabKey}
+          facts={st.facts}
+          onFacts={(facts) => update({ facts })}
+          deviceName={props.deviceName}
+          site={props.site}
+          environment={props.environment}
+          onToast={props.onToast}
+        />
+      )}
       {!sessionId && section !== "workstation" && <div className="tools-note">Connect a device to run checks, workflows, backups or proposed commands. Saved configs can still be viewed, searched and compared.</div>}
     </aside>
   );

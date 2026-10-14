@@ -145,6 +145,8 @@ pub async fn run(spec: &ConnectSpec, io: &Io, mut input: mpsc::UnboundedReceiver
     io.status("connected", format!("Telnet {host_port}"));
 
     let mut t = Telnet { state: State::Data, sub: Vec::new(), naws: false, cols: spec.cols, rows: spec.rows };
+    let mut login = spec.auto_login.then(|| super::autologin::AutoLogin::new(&spec.username));
+    let mut password = spec.password.clone().or_else(|| spec.device_id.as_deref().and_then(crate::store::password_get));
     let mut buf = vec![0u8; 16 * 1024];
     loop {
         tokio::select! {
@@ -161,6 +163,18 @@ pub async fn run(spec: &ConnectSpec, io: &Io, mut input: mpsc::UnboundedReceiver
                 }
                 if !reply.is_empty() {
                     stream.write_all(&reply).await?;
+                }
+                if let Some(l) = login.as_mut() {
+                    match l.feed(&data, password.as_deref()) {
+                        super::autologin::Reply::Send(bytes) => stream.write_all(&encode_input(&bytes)).await?,
+                        super::autologin::Reply::NeedPassword => {
+                            if let Some(p) = io.ask("password", format!("Password for {}", spec.host), None, false).await {
+                                password = Some(p.clone());
+                                stream.write_all(&encode_input(&l.password(&p))).await?;
+                            }
+                        }
+                        super::autologin::Reply::None => {}
+                    }
                 }
             }
             cmd = input.recv() => match cmd {

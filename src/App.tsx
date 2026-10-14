@@ -85,6 +85,8 @@ export default function App() {
   const [sidebarWidth, setSidebarWidth] = useState<number>(() => stored("sidebarWidth", 280));
   const [toolsOpen, setToolsOpen] = useState<boolean>(() => stored("toolsOpen", false));
   const [toolsSection, setToolsSection] = useState<ToolsSection>(() => stored("toolsSection", "checks"));
+  const [broadcast, setBroadcast] = useState<string[] | null>(null);
+  const [broadcastText, setBroadcastText] = useState("");
   const [devices, setDevices] = useState<Device[]>([]);
   const [snippets, setSnippets] = useState<Snippet[]>([]);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
@@ -418,6 +420,7 @@ export default function App() {
       flowControl: d.flowControl,
       log: s.logAll || d.logSession,
       logTimestamps: s.logTimestamps,
+      autoLogin: d.protocol !== "ssh" && d.autoLogin,
     };
   }, []);
 
@@ -551,6 +554,24 @@ export default function App() {
     setTimeout(() => findRef.current?.select(), 0);
   }
 
+  async function sendBroadcast() {
+    const text = broadcastText.trim();
+    if (!broadcast || !text) return;
+    const targets = tabs.filter((t) => broadcast.includes(t.key) && t.state === "connected");
+    if (!targets.length) return showToast("No connected targets selected");
+    const prod = targets.filter((t) => tabDevice(t)?.environment === "production");
+    const ok = await askConfirm({
+      title: `Send to ${targets.length} session${targets.length === 1 ? "" : "s"}?`,
+      message: `${text}\n\nTargets: ${targets.map((t) => t.title).join(", ")}${prod.length ? `\n\n${prod.length} of them ${prod.length === 1 ? "is a" : "are"} production device${prod.length === 1 ? "" : "s"}.` : ""}`,
+      confirm: "Send to all",
+      danger: prod.length > 0,
+    });
+    if (!ok) return;
+    for (const t of targets) t.session.send(text + "\r");
+    setBroadcastText("");
+    showToast(`Sent to ${targets.length} session${targets.length === 1 ? "" : "s"}`);
+  }
+
   async function sendSnippet(s: Snippet) {
     if (!active) return;
     const lines = s.body.replace(/\r\n/g, "\n").replace(/\n+$/, "").split("\n");
@@ -604,6 +625,8 @@ export default function App() {
     action("explain", "Explain selected output", () => { setToolsSection("assistant"); setToolsOpen(true); }, undefined, !!active?.session.selection());
     action("workstation", "Workstation tools (ping, traceroute, DNS, ports, MTU, subnet)", () => { setToolsSection("workstation"); setToolsOpen(true); });
     action("workflows", "Guided troubleshooting", () => { setToolsSection("workflows"); setToolsOpen(true); });
+    action("deploy", "Templates, firmware, checklists, audit", () => { setToolsSection("deploy"); setToolsOpen(true); });
+    action("broadcast", broadcast ? "Stop broadcasting" : "Broadcast a command to several sessions", () => setBroadcast((b) => (b ? null : tabs.filter((t) => t.state === "connected").map((t) => t.key))), `${mod}+Shift+L`, tabs.length > 1 || !!broadcast);
     action("snippets", "Manage snippets", () => setSnippetsOpen(true), `${mod}+Shift+O`);
     action("settings", "Settings", () => setSettingsOpen(true), `${mod}+,`);
     action("import", "Import devices", () => void onImport());
@@ -661,6 +684,7 @@ export default function App() {
       else if (modKey && e.shiftKey && key === "b") setSidebarOpen((v) => !v);
       else if (modKey && e.shiftKey && key === "i") setToolsOpen((v) => !v);
       else if (modKey && e.shiftKey && key === "a") { setToolsSection("assistant"); setToolsOpen(true); }
+      else if (modKey && e.shiftKey && key === "l") setBroadcast((b) => (b ? null : tabsRef.current.filter((t) => t.state === "connected").map((t) => t.key)));
       else if (modKey && e.shiftKey && key === "f") openFind();
       else if (modKey && e.shiftKey && key === "c") active?.session.copySelection();
       else if (modKey && e.shiftKey && key === "v") void active?.session.pasteClipboard();
@@ -801,6 +825,7 @@ export default function App() {
                   <span className="title">{t.title}</span>
                   {t.promptInfo && <span className={`priv ${t.promptInfo.privilege}`} title={PRIVILEGE_LABEL[t.promptInfo.privilege]}>{promptGlyph(t.promptInfo)}</span>}
                   {t.logPath && <span className="rec" title="Logging to a file"><RecordIcon /></span>}
+                  {broadcast?.includes(t.key) && <span className="bc-badge" title="Receives broadcast commands">BC</span>}
                   <button className="icon-btn" title={`Close (${mod}+Shift+W)`} onMouseDown={(e) => e.stopPropagation()} onClick={() => void closeTab(t.key)}>
                     <CloseIcon />
                   </button>
@@ -813,6 +838,27 @@ export default function App() {
           </div>
         )}
 
+        {broadcast && (
+          <div className="broadcast">
+            <span className="broadcast-label">BROADCAST</span>
+            <div className="broadcast-targets">
+              {tabs.filter((t) => t.state === "connected").map((t) => {
+                const env = envInfo(tabDevice(t)?.environment ?? "");
+                return (
+                  <label key={t.key} className={`check${env.short === "PROD" ? " warn-text" : ""}`}>
+                    <input type="checkbox" checked={broadcast.includes(t.key)} onChange={(e) => setBroadcast((b) => (e.target.checked ? [...(b ?? []), t.key] : (b ?? []).filter((k) => k !== t.key)))} />
+                    {t.title}{env.short ? ` (${env.short})` : ""}
+                  </label>
+                );
+              })}
+            </div>
+            <form className="broadcast-form" onSubmit={(e) => { e.preventDefault(); void sendBroadcast(); }}>
+              <input value={broadcastText} onChange={(e) => setBroadcastText(e.target.value)} placeholder={`Command for ${broadcast.length} selected session${broadcast.length === 1 ? "" : "s"} (typed keys in the terminal are not broadcast)`} spellCheck={false} autoFocus />
+              <button type="submit" className="btn small danger-fill" disabled={!broadcastText.trim() || !broadcast.length}>Send to {broadcast.length}</button>
+            </form>
+            <button className="icon-btn" title={`Stop broadcasting (${mod}+Shift+L)`} onClick={() => setBroadcast(null)}><CloseIcon /></button>
+          </div>
+        )}
         <div className="workspace">
         <div className={`panes${split ? ` split ${splitDir}` : ""}`} ref={panesBox}>
           {tabs.length === 0 && (
@@ -829,6 +875,7 @@ export default function App() {
                   <li><span>Snippets</span><kbd>{mod}+Shift+O</kbd></li>
                   <li><span>Tools: checks, configs, workflows</span><kbd>{mod}+Shift+I</kbd></li>
                   <li><span>Assistant</span><kbd>{mod}+Shift+A</kbd></li>
+                  <li><span>Broadcast to sessions</span><kbd>{mod}+Shift+L</kbd></li>
                   <li><span>Find in output</span><kbd>{mod}+Shift+F</kbd></li>
                   <li><span>Bookmark a line</span><kbd>{mod}+Shift+M</kbd></li>
                   <li><span>Switch tab</span><kbd>Ctrl+Tab · Alt+1…9</kbd></li>

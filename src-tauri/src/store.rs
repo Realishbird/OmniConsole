@@ -86,6 +86,8 @@ pub struct Device {
     pub auto_reconnect: bool,
     #[serde(default)]
     pub log_session: bool,
+    #[serde(default)]
+    pub auto_login: bool,
 }
 
 fn default_auth() -> String {
@@ -150,7 +152,7 @@ pub fn save_devices(dir: &Path, devices: &[Device]) -> Result<()> {
 /*
  *  small app data files the UI owns (snippets, history, settings)
  */
-const DATA_KINDS: &[&str] = &["snippets", "history", "settings", "workspace", "audit"];
+const DATA_KINDS: &[&str] = &["snippets", "history", "settings", "workspace", "audit", "checklists"];
 
 fn data_path(dir: &Path, kind: &str) -> Result<PathBuf> {
     if !DATA_KINDS.contains(&kind) {

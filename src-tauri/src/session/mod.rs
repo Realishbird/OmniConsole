@@ -2,6 +2,7 @@
 //! the UI sends input through `Input` and receives output bytes on a raw
 //! channel and state changes / questions on an event channel.
 
+pub mod autologin;
 mod log;
 pub mod runner;
 mod serial;
@@ -52,6 +53,9 @@ pub struct ConnectSpec {
     /// quick connect: typed by the user, not saved
     #[serde(default)]
     pub password: Option<String>,
+    /// Telnet and serial: answer the Username/Password questions
+    #[serde(default)]
+    pub auto_login: bool,
 
     // SSH
     /// "password" | "key" | "agent"
@@ -257,6 +261,11 @@ impl SessionManager {
 
     /// Run a command on the session and return its cleaned output.
     pub async fn run_command(&self, id: &str, command: &str, timeout: std::time::Duration) -> anyhow::Result<String> {
+        self.run_command_with(id, command, timeout, None).await
+    }
+
+    /// `run_command`, answering the command's questions when `answers` is given.
+    pub async fn run_command_with(&self, id: &str, command: &str, timeout: std::time::Duration, answers: Option<runner::Answers>) -> anyhow::Result<String> {
         let (input, capture, busy) = {
             let sessions = self.sessions.lock().unwrap();
             let h = sessions.get(id).ok_or_else(|| anyhow::anyhow!("the session is closed"))?;
@@ -266,7 +275,7 @@ impl SessionManager {
         let send = move |bytes: Vec<u8>| {
             let _ = input.send(Input::Data(bytes));
         };
-        runner::Runner { capture: &capture, send: &send }.run(command, timeout).await
+        runner::Runner { capture: &capture, send: &send }.run_with(command, timeout, answers).await
     }
 
     pub fn send_break(&self, id: &str) {

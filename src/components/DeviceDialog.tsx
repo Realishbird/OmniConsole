@@ -93,7 +93,7 @@ export default function DeviceDialog({ device, isNew, devices, onSave, onCancel 
     }
     if (!out.name) out.name = out.protocol === "serial" ? out.serialPort : out.host;
 
-    const keepSecrets = out.protocol === "ssh";
+    const keepSecrets = out.protocol === "ssh" || out.autoLogin;
     let pw: SecretChange = { kind: "keep" };
     if (!keepSecrets || !savePassword) pw = hadPassword ? { kind: "delete" } : { kind: "keep" };
     else if (password) pw = { kind: "set", value: password };
@@ -107,7 +107,7 @@ export default function DeviceDialog({ device, isNew, devices, onSave, onCancel 
   const sections: { id: Section; label: string; show: boolean }[] = [
     { id: "general", label: "General", show: true },
     { id: "location", label: "Location", show: true },
-    { id: "login", label: "Login", show: !serial },
+    { id: "login", label: "Login", show: true },
     { id: "serial", label: "Serial", show: serial },
     { id: "session", label: "Session", show: true },
   ];
@@ -184,7 +184,7 @@ export default function DeviceDialog({ device, isNew, devices, onSave, onCancel 
           </div>
         )}
 
-        {section === "login" && !serial && (
+        {section === "login" && (
           <div className="form">
             <label>Username</label>
             <input value={d.username} onChange={(e) => set("username", e.target.value)} placeholder="Asked when connecting if empty" spellCheck={false} />
@@ -211,7 +211,13 @@ export default function DeviceDialog({ device, isNew, devices, onSave, onCancel 
               </>
             )}
 
-            {d.protocol === "ssh" && (
+            {d.protocol !== "ssh" && (
+              <label className="check">
+                <input type="checkbox" checked={d.autoLogin} onChange={(e) => set("autoLogin", e.target.checked)} />
+                Log in automatically at the Username and Password prompts
+              </label>
+            )}
+            {(d.protocol === "ssh" || d.autoLogin) && (
               <>
                 <label>Password</label>
                 <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder={hadPassword ? "Saved, leave empty to keep it" : "Asked when connecting if empty"} disabled={!savePassword} />
@@ -221,7 +227,7 @@ export default function DeviceDialog({ device, isNew, devices, onSave, onCancel 
                 </label>
               </>
             )}
-            {d.protocol === "telnet" && <div className="hint">Telnet logs in at the device's own prompts. Automatic Telnet login comes in a later update.</div>}
+            {d.protocol === "telnet" && !d.autoLogin && <div className="hint">Telnet logs in at the device's own prompts; turn on automatic login to answer them with the saved username and password.</div>}
 
             {d.protocol === "ssh" && (
               <>

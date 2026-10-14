@@ -60,15 +60,24 @@ pub async fn run(spec: &ConnectSpec, io: &Io, mut input: mpsc::UnboundedReceiver
     // reading blocks, so it gets its own thread
     let stop = Arc::new(AtomicBool::new(false));
     let (gone_tx, mut gone_rx) = mpsc::unbounded_channel::<String>();
+    let (seen_tx, mut seen_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    let mut login = spec.auto_login.then(|| super::autologin::AutoLogin::new(&spec.username));
+    let mut password = spec.password.clone().or_else(|| spec.device_id.as_deref().and_then(crate::store::password_get));
     let reader_io = io.clone();
     let reader_stop = stop.clone();
+    let watch_login = login.is_some();
     let mut reader = port;
     std::thread::spawn(move || {
         let mut buf = [0u8; 4096];
         while !reader_stop.load(Ordering::Relaxed) {
             match reader.read(&mut buf) {
                 Ok(0) => {}
-                Ok(n) => reader_io.output(&buf[..n]),
+                Ok(n) => {
+                    reader_io.output(&buf[..n]);
+                    if watch_login {
+                        let _ = seen_tx.send(buf[..n].to_vec());
+                    }
+                }
                 Err(e) if e.kind() == ErrorKind::TimedOut || e.kind() == ErrorKind::Interrupted => {}
                 Err(e) => {
                     let _ = gone_tx.send(e.to_string());
@@ -99,6 +108,20 @@ pub async fn run(spec: &ConnectSpec, io: &Io, mut input: mpsc::UnboundedReceiver
             },
             Some(err) = gone_rx.recv() => {
                 break Err(anyhow::anyhow!("serial port lost ({err}), was the cable unplugged?"));
+            }
+            Some(data) = seen_rx.recv(), if login.is_some() => {
+                if let Some(l) = login.as_mut() {
+                    match l.feed(&data, password.as_deref()) {
+                        super::autologin::Reply::Send(bytes) => { let _ = writer.write_all(&bytes); }
+                        super::autologin::Reply::NeedPassword => {
+                            if let Some(p) = io.ask("password", format!("Password for {}", spec.serial_port), None, false).await {
+                                password = Some(p.clone());
+                                let _ = writer.write_all(&l.password(&p));
+                            }
+                        }
+                        super::autologin::Reply::None => {}
+                    }
+                }
             }
         }
     };
