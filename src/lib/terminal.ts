@@ -185,6 +185,17 @@ export class TerminalSession {
     return this.term.getSelection();
   }
 
+  /** The last `count` non-empty lines on screen and in scrollback. */
+  recentOutput(count: number): string {
+    const buf = this.term.buffer.active;
+    const lines: string[] = [];
+    for (let i = buf.baseY + buf.cursorY; i >= 0 && lines.length < count; i--) {
+      const text = buf.getLine(i)?.translateToString(true) ?? "";
+      if (text.trim() || lines.length) lines.unshift(text);
+    }
+    return lines.join("\n");
+  }
+
   /** The line the cursor is on, as plain text. */
   private cursorLine(): string {
     const buf = this.term.buffer.active;

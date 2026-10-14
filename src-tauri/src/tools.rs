@@ -314,3 +314,9 @@ pub async fn save_bundle(app: AppHandle, name: String, files: Vec<BundleFile>, m
     configs::write_bundle(&path, &files).map_err(err)?;
     Ok(Some(path.display().to_string()))
 }
+
+/// What each proposed command would do, so the UI can gate it.
+#[tauri::command]
+pub fn classify_commands(commands: Vec<String>) -> Vec<crate::cisco::classify::Classified> {
+    crate::cisco::classify::classify(&commands)
+}

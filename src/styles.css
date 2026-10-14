@@ -419,3 +419,73 @@ kbd {
 pre.diff .diff-add { background: color-mix(in srgb, var(--good) 12%, transparent); display: inline; }
 pre.diff .diff-del { background: color-mix(in srgb, var(--bad) 12%, transparent); display: inline; }
 label.check { display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
+
+/* ---- assistant ---- */
+.tools-head .dialog-tabs button { padding: 8px 9px; font-size: 12.5px; }
+.dialog-tabs.small { margin: 0; }
+.dialog-tabs.small button { padding: 6px 9px; font-size: 12px; }
+.small { font-size: 11.5px; }
+.tools-note.inline { border: 0; padding: 0; }
+button.link { background: none; border: 0; color: var(--accent); cursor: pointer; font: inherit; padding: 0; }
+.assistant { gap: 8px; }
+.chat { flex: 1; display: flex; flex-direction: column; gap: 10px; min-height: 120px; }
+.turn.user .user-text { margin: 0 0 0 40px; padding: 8px 12px; border-radius: 12px 12px 4px 12px; background: color-mix(in srgb, var(--accent) 14%, transparent); white-space: pre-wrap; font: inherit; font-size: 12.5px; }
+.turn.assistant { font-size: 13px; line-height: 1.5; }
+.md p { margin: 0 0 8px; }
+.md ul, .md ol { margin: 0 0 8px; padding-left: 20px; }
+.md .md-h { font-weight: 600; margin: 10px 0 4px; }
+.md code, .review-lines code, .wf-step-head code { font: 11.5px ui-monospace, Menlo, Consolas, monospace; background: var(--hover); padding: 1px 4px; border-radius: 3px; }
+.md .md-code { margin: 0 0 8px; padding: 8px 10px; border-radius: 6px; background: var(--hover); font: 11.5px ui-monospace, Menlo, Consolas, monospace; white-space: pre-wrap; word-break: break-word; }
+.md .md-code.cli { opacity: 0.6; }
+.review { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin: 6px 0; background: var(--bg); display: flex; flex-direction: column; gap: 8px; font-size: 12.5px; }
+.review.config { border-color: color-mix(in srgb, var(--warn) 55%, var(--border)); }
+.review.disruptive { border-color: color-mix(in srgb, var(--bad) 60%, var(--border)); }
+.review.done { opacity: 0.9; }
+.review-head { display: flex; align-items: center; gap: 8px; }
+.kind-chip { padding: 1px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; background: color-mix(in srgb, var(--good) 18%, transparent); color: var(--good); white-space: nowrap; }
+.kind-chip.config { background: color-mix(in srgb, var(--warn) 20%, transparent); color: var(--warn); }
+.kind-chip.disruptive { background: color-mix(in srgb, var(--bad) 18%, transparent); color: var(--bad); }
+.review-lines { margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 3px; }
+.review-lines li.disruptive code { color: var(--bad); }
+.review-lines li.config code { color: var(--warn); }
+.review .row, .wf-inputs, .ws-form, .confirm .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.confirm { border-top: 1px dashed var(--border); padding-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.confirm p { margin: 0; }
+.confirm label.typed { display: flex; flex-direction: column; gap: 4px; }
+.confirm input, .review.confirm input { height: 28px; }
+.btn.danger-fill { background: var(--bad); border-color: var(--bad); color: #fff; font-weight: 600; }
+.btn.danger-fill:disabled { opacity: 0.5; }
+.btn:disabled { opacity: 0.55; cursor: default; }
+.chat-input { display: flex; gap: 6px; align-items: flex-end; position: sticky; bottom: 0; background: var(--sidebar); padding-top: 6px; }
+.chat-input textarea { flex: 1; resize: vertical; min-height: 44px; font: inherit; font-size: 13px; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text); }
+.chat-input textarea:focus { border-color: var(--accent); outline: none; }
+
+/* ---- workstation ---- */
+.ws-banner { padding: 6px 10px; border-radius: 6px; font-size: 12px; background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--text); }
+.ws-form input, .ws-form select, .ws-subnet input, .wf-inputs input { height: 30px; }
+.ws-form > input:first-child, .ws-subnet > input { flex: 1; min-width: 160px; }
+.ws-form label, .wf-inputs label { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text-quiet); }
+.ws-form label input { width: 64px; }
+.ws-form input.ports { width: 200px; }
+.ws-output { border: 1px solid var(--border); border-radius: 8px; background: var(--bg); padding: 8px 10px; font-size: 12.5px; display: flex; flex-direction: column; gap: 6px; }
+.ws-output pre { margin: 0; font: 11.5px ui-monospace, Menlo, Consolas, monospace; white-space: pre-wrap; word-break: break-word; max-height: 360px; overflow: auto; }
+.ws-summary { font-weight: 600; }
+.ws-subnet { display: flex; flex-direction: column; gap: 8px; }
+.ws-subnet dl { margin: 0; display: grid; grid-template-columns: 90px 1fr; gap: 4px 10px; font-size: 12.5px; }
+.ws-subnet dt { color: var(--text-quiet); }
+.ws-subnet dd { margin: 0; font-family: ui-monospace, Menlo, Consolas, monospace; }
+.ws-split { margin: 0; font: 11.5px ui-monospace, Menlo, Consolas, monospace; columns: 2; max-height: 240px; overflow: auto; }
+
+/* ---- workflows ---- */
+.wf-list { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.wf-card { display: flex; flex-direction: column; gap: 3px; text-align: left; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); cursor: pointer; font: inherit; font-size: 12.5px; }
+.wf-card:hover { border-color: var(--accent); }
+.wf-inputs { padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); }
+.wf-inputs input { width: 150px; }
+.wf-steps { margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 8px; font-size: 12.5px; }
+.wf-steps li { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; background: var(--bg); display: flex; flex-direction: column; gap: 5px; }
+.wf-steps li.done { border-color: color-mix(in srgb, var(--good) 45%, var(--border)); }
+.wf-steps li.failed { border-color: color-mix(in srgb, var(--bad) 45%, var(--border)); }
+.wf-step-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.wf-look { color: var(--text-quiet); font-size: 12px; }
+.wf-steps pre { margin: 0; padding: 8px 10px; border-radius: 6px; background: var(--hover); font: 11.5px ui-monospace, Menlo, Consolas, monospace; white-space: pre-wrap; word-break: break-word; max-height: 300px; overflow: auto; }

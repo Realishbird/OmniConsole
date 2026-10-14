@@ -1,3 +1,4 @@
+import { DEFAULT_AI, type AiSettings } from "./ai";
 // App settings, kept in settings.json next to devices.json (the backend
 // reads logDir from it).
 export type AnsiKey =
@@ -27,6 +28,7 @@ export interface Settings {
   logDir: string;
   /** config backups folder; empty = Documents/OmniConsole/Configs */
   configDir: string;
+  ai: AiSettings;
   maskExports: boolean;
   warnInsecure: boolean;
   groupBy: GroupBy;
@@ -61,6 +63,7 @@ export const DEFAULT_SETTINGS: Settings = {
   logTimestamps: true,
   logDir: "",
   configDir: "",
+  ai: DEFAULT_AI,
   maskExports: true,
   warnInsecure: true,
   groupBy: "site",

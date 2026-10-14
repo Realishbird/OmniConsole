@@ -1,8 +1,10 @@
 //! OmniConsole backend: sessions (SSH, Telnet, serial), saved devices and
 //! the OS credential store. The UI lives in ../src (React + xterm.js).
 
+mod ai;
 mod cisco;
 mod commands;
+mod nettools;
 mod redact;
 mod session;
 mod store;
@@ -17,6 +19,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(SessionManager::default())
         .manage(tools::ToolState::default())
+        .manage(nettools::NetJobs::default())
+        .manage(ai::AiJobs::default())
         .invoke_handler(tauri::generate_handler![
             commands::session_open,
             commands::session_write,
@@ -54,6 +58,16 @@ pub fn run() {
             tools::open_config_folder,
             tools::reveal_config,
             tools::save_bundle,
+            tools::classify_commands,
+            nettools::net_ping,
+            nettools::net_traceroute,
+            nettools::net_dns,
+            nettools::net_ports,
+            nettools::net_mtu,
+            nettools::net_cancel,
+            ai::ai_models,
+            ai::ai_chat,
+            ai::ai_cancel,
         ])
         .run(tauri::generate_context!())
         .expect("error while running OmniConsole");

@@ -600,6 +600,10 @@ export default function App() {
     action("tools", toolsOpen ? "Hide tools" : "Show tools (health checks, configs)", () => setToolsOpen((v) => !v), `${mod}+Shift+I`);
     action("checks", "Run health checks", () => { setToolsSection("checks"); setToolsOpen(true); });
     action("backup", "Back up running config", () => { setToolsSection("configs"); setToolsOpen(true); });
+    action("assistant", "Ask the assistant", () => { setToolsSection("assistant"); setToolsOpen(true); }, `${mod}+Shift+A`);
+    action("explain", "Explain selected output", () => { setToolsSection("assistant"); setToolsOpen(true); }, undefined, !!active?.session.selection());
+    action("workstation", "Workstation tools (ping, traceroute, DNS, ports, MTU, subnet)", () => { setToolsSection("workstation"); setToolsOpen(true); });
+    action("workflows", "Guided troubleshooting", () => { setToolsSection("workflows"); setToolsOpen(true); });
     action("snippets", "Manage snippets", () => setSnippetsOpen(true), `${mod}+Shift+O`);
     action("settings", "Settings", () => setSettingsOpen(true), `${mod}+,`);
     action("import", "Import devices", () => void onImport());
@@ -656,6 +660,7 @@ export default function App() {
       else if (modKey && e.shiftKey && key === "w") activeKey && void closeTab(activeKey);
       else if (modKey && e.shiftKey && key === "b") setSidebarOpen((v) => !v);
       else if (modKey && e.shiftKey && key === "i") setToolsOpen((v) => !v);
+      else if (modKey && e.shiftKey && key === "a") { setToolsSection("assistant"); setToolsOpen(true); }
       else if (modKey && e.shiftKey && key === "f") openFind();
       else if (modKey && e.shiftKey && key === "c") active?.session.copySelection();
       else if (modKey && e.shiftKey && key === "v") void active?.session.pasteClipboard();
@@ -822,7 +827,8 @@ export default function App() {
                   <li><span>Split right / down</span><kbd>{mod}+Shift+D / E</kbd></li>
                   <li><span>Command history</span><kbd>{mod}+Shift+H</kbd></li>
                   <li><span>Snippets</span><kbd>{mod}+Shift+O</kbd></li>
-                  <li><span>Health checks and configs</span><kbd>{mod}+Shift+I</kbd></li>
+                  <li><span>Tools: checks, configs, workflows</span><kbd>{mod}+Shift+I</kbd></li>
+                  <li><span>Assistant</span><kbd>{mod}+Shift+A</kbd></li>
                   <li><span>Find in output</span><kbd>{mod}+Shift+F</kbd></li>
                   <li><span>Bookmark a line</span><kbd>{mod}+Shift+M</kbd></li>
                   <li><span>Switch tab</span><kbd>Ctrl+Tab · Alt+1…9</kbd></li>
@@ -898,6 +904,12 @@ export default function App() {
             onClose={() => setToolsOpen(false)}
             onSend={(c) => active?.session.send(c + "\r")}
             onToast={showToast}
+            environment={activeDevice?.environment ?? ""}
+            host={activeDevice?.host ?? active?.session.spec.host ?? ""}
+            ai={settings.ai}
+            getSelection={() => active?.session.selection() ?? ""}
+            getRecent={() => active?.session.recentOutput(120) ?? ""}
+            onOpenSettings={() => setSettingsOpen(true)}
           />
         )}
         </div>

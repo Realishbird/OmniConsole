@@ -150,7 +150,7 @@ pub fn save_devices(dir: &Path, devices: &[Device]) -> Result<()> {
 /*
  *  small app data files the UI owns (snippets, history, settings)
  */
-const DATA_KINDS: &[&str] = &["snippets", "history", "settings", "workspace"];
+const DATA_KINDS: &[&str] = &["snippets", "history", "settings", "workspace", "audit"];
 
 fn data_path(dir: &Path, kind: &str) -> Result<PathBuf> {
     if !DATA_KINDS.contains(&kind) {
@@ -360,6 +360,8 @@ pub fn secret_name(kind: &str, device_id: &str) -> Result<String> {
     match kind {
         "password" => Ok(format!("device/{device_id}")),
         "passphrase" => Ok(format!("passphrase/{device_id}")),
+        // AI provider API keys, keyed by the provider id
+        "apikey" => Ok(format!("ai/{device_id}")),
         _ => bail!("unknown secret kind {kind}"),
     }
 }

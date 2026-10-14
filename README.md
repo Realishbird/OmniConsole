@@ -39,6 +39,19 @@ Runs on Windows (x64, ARM64), macOS (Apple Silicon, Intel) and Linux (x64, ARM64
 - Search across the newest backup of every device (or every version), plain text or regular expression
 - Run any command and capture its output while it still shows in the terminal; the pager is answered for you
 
+**Assistant** (Tools panel → Assistant, Ctrl/Cmd+Shift+A)
+- Providers: Ollama and LM Studio on this computer (suggested model Qwen3 8B), OpenAI, Anthropic, or any OpenAI-compatible endpoint; API keys live in the OS keychain
+- Explain selected output, suggest next steps from the latest health check, interpret diagnostics, generate configuration, all tailored to the detected OS and version
+- Answers separate what the output verifies from what the model infers, and ask for the missing show command instead of guessing
+- Every proposed command appears as a card classified read-only, configuration change or disruptive. Read-only commands run on approval; configuration changes need a review checkbox and a second confirmation, take a running-config backup first and write an audit entry; disruptive commands also need the device name typed; production devices stay locked until unlocked for the tab
+- Passwords, secrets, SNMP communities, keys and certificate bodies are replaced with `<removed>` before anything leaves the app; sharing of output, configuration text and device names can each be turned off
+
+**Workstation tools** (run from this computer, not the device)
+- Ping, traceroute, DNS lookup (any record type, optional server), TCP port check, path MTU discovery, subnet calculator with splitting
+
+**Guided troubleshooting**
+- Step-by-step read-only workflows for tracing a device by IP/MAC to its port (and the neighbor behind it), DHCP, DNS, VLAN, trunking, spanning tree, routing, ACL, wireless and authentication; each step says what to look for and can be handed to the assistant
+
 **Security**
 - Passwords and key passphrases live in the OS credential store (Windows Credential Manager, macOS Keychain, Linux Secret Service), never in files or exports
 - Host keys are trusted on first use, with a loud warning if one changes
@@ -46,7 +59,7 @@ Runs on Windows (x64, ARM64), macOS (Apple Silicon, Intel) and Linux (x64, ARM64
 
 **Themes**: Midnight, Graphite, Nord, Dracula, Solarized Dark and Light. Fonts, size, spacing, cursor, contrast and the 16 ANSI colors are adjustable; compact and comfortable layouts.
 
-Planned next: the AI assistant (local and cloud providers, redaction, commands shown for review before anything is sent), workstation tools (ping, traceroute, DNS, port check, subnet calculator), templates and reviewed deployment with rollback, SFTP/SCP.
+Planned next: templates and reviewed deployment with rollback, firmware upgrades, broadcast to several sessions, an audit trail viewer, SFTP/SCP.
 
 ## Shortcuts
 
@@ -58,7 +71,8 @@ Planned next: the AI assistant (local and cloud providers, redaction, commands s
 | Ctrl+Tab, Alt+1…9 | Switch tab |
 | Ctrl/Cmd+Shift+D / E | Split right / down (again to unsplit); F6 switches panes |
 | Ctrl/Cmd+Shift+B | Toggle sidebar |
-| Ctrl/Cmd+Shift+I | Tools panel: health checks and config backups |
+| Ctrl/Cmd+Shift+I | Tools panel: checks, workflows, configs, workstation tools |
+| Ctrl/Cmd+Shift+A | Assistant |
 | Ctrl/Cmd+Shift+F | Find in output |
 | Ctrl/Cmd+Shift+H | Command history |
 | Ctrl/Cmd+Shift+O | Snippets |

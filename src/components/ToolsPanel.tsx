@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChecksIcon, CloseIcon, DiffIcon, FolderIcon, PlayIcon, RefreshIcon, SaveIcon, StopIcon, TrashIcon } from "./Icons";
+import Assistant from "./Assistant";
+import Workstation from "./Workstation";
+import Workflows from "./Workflows";
+import type { AiSettings } from "../lib/ai";
 import {
   backupConfig, bundleFiles, cancelChecks, checksCatalog, compareReports, deleteConfig, detectDevice, diffConfigs, fileStamp,
   listConfigs, OS_LABEL, openConfigFolder, outputText, readConfig, revealConfig, runChecks, runCommand, saveBundle, saveReport,
@@ -7,7 +11,8 @@ import {
   type CheckResult, type DiffResult, type Facts, type SearchHit, type Status, type Table,
 } from "../lib/tools";
 
-export type ToolsSection = "checks" | "configs";
+export type ToolsSection = "checks" | "configs" | "assistant" | "workstation" | "workflows";
+
 
 interface Props {
   /** the Rust session id of the active tab, when connected */
@@ -24,6 +29,13 @@ interface Props {
   /** send a follow-up command to the terminal */
   onSend: (command: string) => void;
   onToast: (text: string) => void;
+  environment: string;
+  /** the device host, for the workstation tools' default target */
+  host: string;
+  ai: AiSettings;
+  getSelection: () => string;
+  getRecent: () => string;
+  onOpenSettings: () => void;
 }
 
 /** Per-tab state survives closing the panel and switching tabs. */
@@ -50,6 +62,7 @@ const STATUS_ORDER: Record<Status, number> = { fail: 0, warn: 1, unknown: 2, pas
 
 export default function ToolsPanel(props: Props) {
   const { sessionId, tabKey, section, onSection, onClose } = props;
+  const [pendingAsk, setPendingAsk] = useState<{ question: string; output: string } | null>(null);
   const [, setTick] = useState(0);
   const stateRef = useRef<TabTools>(cache.get(tabKey) ?? fresh());
   // switching tabs swaps the state object
@@ -65,17 +78,40 @@ export default function ToolsPanel(props: Props) {
     <aside className="tools">
       <div className="tools-head">
         <div className="dialog-tabs">
-          <button className={section === "checks" ? "on" : ""} onClick={() => onSection("checks")}>Health checks</button>
+          <button className={section === "assistant" ? "on" : ""} onClick={() => onSection("assistant")}>Assistant</button>
+          <button className={section === "checks" ? "on" : ""} onClick={() => onSection("checks")}>Checks</button>
+          <button className={section === "workflows" ? "on" : ""} onClick={() => onSection("workflows")}>Workflows</button>
           <button className={section === "configs" ? "on" : ""} onClick={() => onSection("configs")}>Configs</button>
+          <button className={section === "workstation" ? "on" : ""} onClick={() => onSection("workstation")}>Workstation</button>
         </div>
         <button className="icon-btn" title="Close tools" onClick={onClose}><CloseIcon /></button>
       </div>
-      {section === "checks" ? (
-        <Checks {...props} st={st} update={update} />
-      ) : (
-        <Configs {...props} st={st} update={update} />
+      {section === "checks" && <Checks {...props} st={st} update={update} />}
+      {section === "configs" && <Configs {...props} st={st} update={update} />}
+      {section === "assistant" && (
+        <Assistant
+          sessionId={sessionId}
+          tabKey={tabKey}
+          facts={st.facts}
+          report={st.report}
+          hostname={props.hostname}
+          deviceName={props.deviceName}
+          site={props.site}
+          environment={props.environment}
+          ai={props.ai}
+          getSelection={props.getSelection}
+          getRecent={props.getRecent}
+          onToast={props.onToast}
+          onOpenSettings={props.onOpenSettings}
+          pendingAsk={pendingAsk}
+          onAskConsumed={() => setPendingAsk(null)}
+        />
       )}
-      {!sessionId && <div className="tools-note">Connect a device to run checks or take backups. Saved configs can still be viewed, searched and compared.</div>}
+      {section === "workflows" && (
+        <Workflows sessionId={sessionId} facts={st.facts} onToast={props.onToast} onAsk={(question, output) => { setPendingAsk({ question, output }); onSection("assistant"); }} />
+      )}
+      {section === "workstation" && <Workstation key={tabKey} defaultTarget={props.host} onToast={props.onToast} />}
+      {!sessionId && section !== "workstation" && <div className="tools-note">Connect a device to run checks, workflows, backups or proposed commands. Saved configs can still be viewed, searched and compared.</div>}
     </aside>
   );
 }

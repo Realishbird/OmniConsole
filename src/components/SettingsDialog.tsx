@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { logFolder, openLogFolder } from "../lib/backend";
 import { configFolder, openConfigFolder } from "../lib/tools";
+import AiSettingsSection from "./AiSettings";
 import { DEFAULT_SETTINGS, FONT_CHOICES, type AnsiKey, type CursorStyle, type Density, type Settings } from "../lib/settings";
 import { THEMES, themeById } from "../lib/themes";
 
@@ -12,7 +13,7 @@ interface Props {
 
 const ANSI = ["black", "red", "green", "yellow", "blue", "magenta", "cyan", "white"] as const;
 
-type Section = "appearance" | "terminal" | "colors" | "logging";
+type Section = "appearance" | "terminal" | "colors" | "logging" | "assistant";
 
 /** Changes apply as you make them, so you can watch the terminal change. */
 export default function SettingsDialog({ settings, onChange, onClose }: Props) {
@@ -49,7 +50,7 @@ export default function SettingsDialog({ settings, onChange, onClose }: Props) {
       <div className="dialog wide" onKeyDown={(e) => e.key === "Escape" && onClose()}>
         <h3>Settings</h3>
         <div className="dialog-tabs">
-          {(["appearance", "terminal", "colors", "logging"] as Section[]).map((s) => (
+          {(["appearance", "terminal", "colors", "logging", "assistant"] as Section[]).map((s) => (
             <button type="button" key={s} className={section === s ? "on" : ""} onClick={() => setSection(s)}>
               {s[0].toUpperCase() + s.slice(1)}
             </button>
@@ -181,8 +182,10 @@ export default function SettingsDialog({ settings, onChange, onClose }: Props) {
           </div>
         )}
 
+        {section === "assistant" && <AiSettingsSection value={settings.ai} onChange={(ai) => set("ai", ai)} />}
+
         <div className="dialog-actions">
-          <button type="button" className="btn left" onClick={() => onChange({ ...DEFAULT_SETTINGS, groupBy: settings.groupBy, logDir: settings.logDir, configDir: settings.configDir })}>
+          <button type="button" className="btn left" onClick={() => onChange({ ...DEFAULT_SETTINGS, groupBy: settings.groupBy, logDir: settings.logDir, configDir: settings.configDir, ai: settings.ai })}>
             Restore defaults
           </button>
           <button type="button" className="btn primary" onClick={onClose} autoFocus>Done</button>
