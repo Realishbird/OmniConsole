@@ -166,6 +166,7 @@ pub struct Runner<'a> {
 impl Runner<'_> {
     /// Send `command` and wait for the prompt. `timeout` bounds the whole
     /// command; a device that keeps printing resets the quiet timer.
+    #[cfg(test)]
     pub async fn run(&self, command: &str, timeout: Duration) -> Result<String> {
         self.run_with(command, timeout, None).await
     }
