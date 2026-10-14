@@ -111,11 +111,17 @@ export default function Assistant(props: Props) {
       reply.streaming = false;
       const blocks = commandBlocks(reply.content);
       if (blocks.length) {
-        reply.blocks = await Promise.all(blocks.map(async (b) => {
+        const reviews = await Promise.all(blocks.map(async (b) => {
           const items = await classifyCommands(b.commands);
           const kind: Kind = items.some((i) => i.kind === "disruptive") ? "disruptive" : items.some((i) => i.kind === "config") ? "config" : "read-only";
           return { title: b.title, items, kind, state: "proposed" as const, outputs: [], backup: null, depth };
         }));
+        // one card for all the read-only commands of a reply; each change keeps its own
+        const readOnly = reviews.filter((r) => r.kind === "read-only");
+        const merged: Review[] = readOnly.length > 1
+          ? [{ ...readOnly[0], title: readOnly.length === reviews.length ? "" : "Read-only", items: readOnly.flatMap((r) => r.items).filter((it, i, all) => all.findIndex((x) => x.command === it.command) === i) }]
+          : readOnly;
+        reply.blocks = [...merged, ...reviews.filter((r) => r.kind !== "read-only")];
       }
     } catch (e) {
       reply.streaming = false;
@@ -255,14 +261,14 @@ export default function Assistant(props: Props) {
       <div className="chat">
         {st.turns.length === 0 && (
           <div className="tools-empty">
-            <p>Ask about the device, select output and choose <em>Explain this output</em>, or describe a configuration to generate. Commands the assistant proposes appear as cards for review: read-only ones run on approval, configuration changes need a second confirmation and get a backup first.</p>
+            <p>Ask about the device, or select output and choose <em>Explain this output</em>. Proposed commands appear as cards: read-only ones run when you approve, changes need a second confirmation and a backup.</p>
           </div>
         )}
         {st.turns.map((t, ti) => (
           <div key={ti} className={`turn ${t.role}`}>
             {t.role === "user" ? <pre className="user-text">{t.content.split("\n\n")[0]}{t.content.includes("```") ? <span className="quiet"> · with output</span> : ""}</pre> : (
               <>
-                <Markdown text={t.content || (t.streaming ? "…" : "")} />
+                <Markdown text={t.content || (t.streaming ? "…" : "")} hideCommands={!!t.blocks?.length} />
                 {t.redacted ? <div className="quiet small">{t.redacted} secret{t.redacted === 1 ? "" : "s"} redacted before sending</div> : null}
                 {t.blocks?.map((b, bi) => b.state !== "dismissed" && (
                   <div key={bi} className={`review ${b.kind} ${b.state}`}>
@@ -274,7 +280,7 @@ export default function Assistant(props: Props) {
                     </div>
                     <ol className="review-lines">
                       {b.items.map((it, k) => (
-                        <li key={k} className={it.kind}><code>{it.command}</code><span className="reason">{it.reason}</span></li>
+                        <li key={k} className={it.kind}><code>{it.command}</code>{it.kind !== "read-only" && <span className="reason">{it.reason}</span>}</li>
                       ))}
                     </ol>
                     {b.state === "proposed" && (

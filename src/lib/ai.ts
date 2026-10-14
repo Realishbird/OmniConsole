@@ -88,7 +88,7 @@ export function systemPrompt(ctx: Context): string {
     `You are the assistant inside OmniConsole, a terminal for network engineers. The engineer is connected to a Cisco device${name}${model} running ${os}${env}.`,
     "Tailor every command to that OS and version. Be concrete and brief; the engineer is skilled and reads output themselves.",
     "Structure answers as: **Verified** (only what the provided output shows, quote the lines), **Likely** (inferences, say why), **Next steps** (commands to run). Never present a guess as a fact. If information is missing, ask for the exact show command instead of assuming.",
-    "Put every command you propose in a fenced code block tagged `cli`, one command per line, in the order to run them. Keep read-only (show) commands and configuration changes in separate blocks. Configuration blocks start with `configure terminal` and end with `end`. Add a one-line comment above a block starting with `!` saying what it does. Never include `reload`, `write erase` or image changes unless explicitly asked, and then say what they do first.",
+    "Put every command you propose in a fenced code block tagged `cli`, one command per line, in the order to run them. Use one block for all the read-only (show) commands of a reply, and a separate block for each configuration change; do not scatter single commands across many blocks or repeat a command outside its block. Configuration blocks start with `configure terminal` and end with `end`. Add a one-line comment above a block starting with `!` saying what it does. Never include `reload`, `write erase` or image changes unless explicitly asked, and then say what they do first.",
     "The app shows each block to the engineer for review; nothing runs without approval, and configuration changes need a second confirmation and a backup first. So do not tell them to be careful about running commands; describe the effect instead.",
     "Secrets in the engineer's text have been replaced with <removed>; do not comment on them.",
     ctx.report ? `\nLatest health check (${new Date(ctx.report.finished * 1000).toISOString()}):\n${ctx.report.results.filter((r) => r.status !== "skipped").map((r) => `- [${STATUS_LABEL[r.status]}] ${r.title}: ${r.summary}${r.evidence.length ? `\n  ${r.evidence.slice(0, 4).join("\n  ")}` : ""}`).join("\n")}` : "",
@@ -107,10 +107,10 @@ export function userTurn(question: string, ctx: Context): string {
 }
 
 export const QUICK_ACTIONS: { id: string; title: string; question: string; needsOutput: boolean }[] = [
-  { id: "explain", title: "Explain this output", question: "Explain this output: what it says, anything abnormal, and what to check next.", needsOutput: true },
-  { id: "next", title: "Suggest next steps", question: "Given the latest health check and this output, what should I look at next? Give the commands.", needsOutput: false },
-  { id: "diagnose", title: "Interpret the diagnostics", question: "Interpret the latest health check results. Which findings matter, what is the likely cause of each, and how do I confirm it?", needsOutput: false },
-  { id: "config", title: "Generate a configuration", question: "Generate the configuration for the following, for this device's OS, as a reviewable `cli` block with a backup-friendly structure: ", needsOutput: false },
+  { id: "explain", title: "Explain output", question: "Explain this output: what it says, anything abnormal, and what to check next.", needsOutput: true },
+  { id: "next", title: "Next steps", question: "Given the latest health check and this output, what should I look at next? Give the commands.", needsOutput: false },
+  { id: "diagnose", title: "Diagnostics", question: "Interpret the latest health check results. Which findings matter, what is the likely cause of each, and how do I confirm it?", needsOutput: false },
+  { id: "config", title: "Generate config", question: "Generate the configuration for the following, for this device's OS, as a reviewable `cli` block with a backup-friendly structure: ", needsOutput: false },
 ];
 
 /* ------------------------------------------------------- reply parsing */

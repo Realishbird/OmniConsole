@@ -1,7 +1,8 @@
 import type { ReactNode } from "react";
 
 /** Enough Markdown for assistant replies: headings, bullets, code, bold. */
-export default function Markdown({ text }: { text: string }) {
+/** `hideCommands` drops fenced command blocks (they are shown as review cards instead). */
+export default function Markdown({ text, hideCommands = false }: { text: string; hideCommands?: boolean }) {
   const out: ReactNode[] = [];
   const lines = text.split("\n");
   let i = 0;
@@ -14,7 +15,10 @@ export default function Markdown({ text }: { text: string }) {
       i++;
       while (i < lines.length && !lines[i].startsWith("```")) body.push(lines[i++]);
       i++;
-      out.push(<pre key={key++} className={`md-code ${fence[1]}`}>{body.join("\n")}</pre>);
+      const tag = fence[1].toLowerCase();
+      const commandish = ["cli", "cisco", "ios"].includes(tag) || (["", "text", "bash", "shell"].includes(tag) && body.some((l) => l.trim()) && body.every((l) => !l.trim() || /^[a-z!#]/i.test(l.trim())));
+      if (hideCommands && commandish) continue;
+      out.push(<pre key={key++} className={`md-code ${tag}`}>{body.join("\n")}</pre>);
       continue;
     }
     const h = line.match(/^(#{1,4})\s+(.*)/);
