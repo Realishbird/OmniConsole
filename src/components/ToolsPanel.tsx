@@ -4,6 +4,8 @@ import Assistant from "./Assistant";
 import Workstation from "./Workstation";
 import Workflows from "./Workflows";
 import DeployPanel from "./DeployPanel";
+import FilesPanel from "./FilesPanel";
+import type { SessionSpec } from "../lib/terminal";
 import type { AiSettings } from "../lib/ai";
 import {
   backupConfig, bundleFiles, cancelChecks, checksCatalog, compareReports, deleteConfig, detectDevice, diffConfigs, fileStamp,
@@ -12,7 +14,7 @@ import {
   type CheckResult, type DiffResult, type Facts, type SearchHit, type Status, type Table,
 } from "../lib/tools";
 
-export type ToolsSection = "checks" | "configs" | "assistant" | "workstation" | "workflows" | "deploy";
+export type ToolsSection = "checks" | "configs" | "assistant" | "workstation" | "workflows" | "deploy" | "files";
 
 
 interface Props {
@@ -37,6 +39,8 @@ interface Props {
   getSelection: () => string;
   getRecent: () => string;
   onOpenSettings: () => void;
+  /** the active tab's connection, for the file transfer connection */
+  spec: SessionSpec | null;
 }
 
 /** Per-tab state survives closing the panel and switching tabs. */
@@ -83,6 +87,7 @@ export default function ToolsPanel(props: Props) {
           <button className={section === "workflows" ? "on" : ""} onClick={() => onSection("workflows")}>Workflows</button>
           <button className={section === "configs" ? "on" : ""} onClick={() => onSection("configs")}>Configs</button>
           <button className={section === "deploy" ? "on" : ""} onClick={() => onSection("deploy")}>Deploy</button>
+          <button className={section === "files" ? "on" : ""} onClick={() => onSection("files")}>Files</button>
           <button className={section === "workstation" ? "on" : ""} onClick={() => onSection("workstation")}>Workstation</button>
         </div>
         <button className="icon-btn" title="Close tools" onClick={onClose}><CloseIcon /></button>
@@ -111,6 +116,7 @@ export default function ToolsPanel(props: Props) {
       {section === "workflows" && (
         <Workflows sessionId={sessionId} tabKey={tabKey} facts={st.facts} onToast={props.onToast} onAsk={(question, output) => { setPendingAsk({ question, output }); onSection("assistant"); }} />
       )}
+      {section === "files" && <FilesPanel tabKey={tabKey} spec={props.spec} deviceName={props.deviceName} onToast={props.onToast} />}
       {section === "workstation" && <Workstation key={tabKey} defaultTarget={props.host} onToast={props.onToast} />}
       {section === "deploy" && (
         <DeployPanel
@@ -124,7 +130,7 @@ export default function ToolsPanel(props: Props) {
           onToast={props.onToast}
         />
       )}
-      {!sessionId && section !== "workstation" && <div className="tools-note">Connect a device to run checks, workflows, backups or proposed commands. Saved configs can still be viewed, searched and compared.</div>}
+      {!sessionId && section !== "workstation" && section !== "files" && <div className="tools-note">Connect a device to run checks, workflows, backups or proposed commands. Saved configs can still be viewed, searched and compared.</div>}
     </aside>
   );
 }

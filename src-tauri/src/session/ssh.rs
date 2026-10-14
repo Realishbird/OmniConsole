@@ -49,7 +49,7 @@ fn preferred() -> Preferred {
     }
 }
 
-struct Client {
+pub struct Client {
     io: Io,
     host_port: String,
 }
@@ -308,7 +308,17 @@ fn timed_out(host_port: &str) -> anyhow::Error {
     anyhow!("no answer from {host_port} after {} seconds", CONNECT_TIMEOUT.as_secs())
 }
 
-pub async fn run(spec: &ConnectSpec, io: &Io, mut input: mpsc::UnboundedReceiver<Input>) -> Result<()> {
+/// An authenticated SSH session, plus the jump host session that carries
+/// it when there is one (dropping that would close the tunnel).
+pub struct Connected {
+    pub session: client::Handle<Client>,
+    pub jump: Option<client::Handle<Client>>,
+    pub user: String,
+    pub host_port: String,
+}
+
+/// Connect (through the jump host when set) and authenticate.
+pub async fn connect(spec: &ConnectSpec, io: &Io) -> Result<Connected> {
     let port = if spec.port == 0 { 22 } else { spec.port };
     let host_port = format!("{}:{}", spec.host, port);
     let handler = Client { io: io.clone(), host_port: host_port.clone() };
@@ -369,6 +379,11 @@ pub async fn run(spec: &ConnectSpec, io: &Io, mut input: mpsc::UnboundedReceiver
         },
     )
     .await?;
+    Ok(Connected { session, jump: jump_session, user, host_port })
+}
+
+pub async fn run(spec: &ConnectSpec, io: &Io, mut input: mpsc::UnboundedReceiver<Input>) -> Result<()> {
+    let Connected { session, jump: jump_session, user, host_port } = connect(spec, io).await?;
 
     let channel = session.channel_open_session().await?;
     channel

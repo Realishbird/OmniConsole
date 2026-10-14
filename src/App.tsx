@@ -7,6 +7,9 @@ import SettingsDialog from "./components/SettingsDialog";
 import SnippetsDialog from "./components/SnippetsDialog";
 import ToolsPanel, { type ToolsSection } from "./components/ToolsPanel";
 import CommandPalette, { type PaletteItem } from "./components/CommandPalette";
+import Completions from "./components/Completions";
+import NameDialog from "./components/NameDialog";
+import { complete, launchExternal, openWindow, type Completion } from "./lib/files";
 import {
   BookmarkIcon, ChecksIcon, CloseIcon, CommandIcon, DownIcon, Logo, PlusIcon, RecordIcon, SaveIcon, SearchIcon, SettingsIcon,
   SidebarIcon, SplitDownIcon, SplitRightIcon, UpIcon,
@@ -20,7 +23,7 @@ import { parseQuick } from "./lib/quick";
 import { DEFAULT_SETTINGS, type Settings } from "./lib/settings";
 import { TerminalSession, type PendingPrompt, type SessionSpec, type SessionState } from "./lib/terminal";
 import { applyTheme, THEMES, themeById } from "./lib/themes";
-import { envInfo, newDevice, serialLabel, type Device, type HistoryEntry, type Snippet } from "./lib/types";
+import { envInfo, EXTERNAL, newDevice, PROTOCOL_LABEL, serialLabel, type Device, type HistoryEntry, type Snippet } from "./lib/types";
 
 interface Tab {
   key: string;
@@ -48,6 +51,14 @@ interface Confirm {
 }
 
 type SplitDir = "row" | "column";
+
+/** A saved set of tabs: which devices were open, and the split. */
+interface Layout {
+  name: string;
+  deviceIds: string[];
+  split: SplitDir | null;
+  savedAt: number;
+}
 
 const isMac = navigator.platform.toLowerCase().includes("mac");
 const MAX_HISTORY = 2000;
@@ -104,6 +115,9 @@ export default function App() {
   const [findOpen, setFindOpen] = useState(false);
   const [findText, setFindText] = useState("");
   const [toast, setToast] = useState<string | null>(null);
+  const [completions, setCompletions] = useState<{ tabKey: string; partial: string; items: Completion[]; loading: boolean } | null>(null);
+  const [layouts, setLayouts] = useState<Layout[]>([]);
+  const [naming, setNaming] = useState<{ title: string; confirm: string; placeholder?: string; resolve: (name: string | null) => void } | null>(null);
   const [, setTick] = useState(0);
   const quickRef = useRef<HTMLInputElement>(null);
   const findRef = useRef<HTMLInputElement>(null);
@@ -134,7 +148,20 @@ export default function App() {
       .finally(() => setSettingsLoaded(true));
     loadData<Snippet[]>("snippets").then((s) => setSnippets(Array.isArray(s) ? s : [])).catch(() => {});
     loadData<HistoryEntry[]>("history").then((h) => setHistory(Array.isArray(h) ? h : [])).catch(() => {});
+    loadData<Layout[]>("workspace").then((l) => setLayouts(Array.isArray(l) ? l : [])).catch(() => {});
   }, []);
+
+  // a second window opened on a device (index.html?connect=<id>) connects to it once devices are loaded
+  const autoConnected = useRef(false);
+  useEffect(() => {
+    if (autoConnected.current || devices.length === 0) return;
+    const id = new URLSearchParams(window.location.search).get("connect");
+    if (!id) return;
+    autoConnected.current = true;
+    const d = devices.find((x) => x.id === id);
+    if (d) void connectDevice(d);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [devices]);
 
   useEffect(() => {
     applyTheme(themeById(settings.theme));
@@ -426,6 +453,16 @@ export default function App() {
 
   const connectDevice = useCallback(
     async (d: Device) => {
+      if (EXTERNAL.includes(d.protocol)) {
+        try {
+          await launchExternal(d.protocol, d.host, d.port, d.username);
+          showToast(`Opened ${d.name} in the ${PROTOCOL_LABEL[d.protocol]} client`);
+          void persist(devicesRef.current.map((x) => (x.id === d.id ? { ...x, lastConnected: Date.now() } : x)));
+        } catch (e) {
+          showToast(String(e));
+        }
+        return;
+      }
       if (d.protocol === "telnet" && d.environment === "production" && settingsRef.current.warnInsecure) {
         const ok = await askConfirm({
           title: `Telnet to production device ${d.name}?`,
@@ -445,6 +482,11 @@ export default function App() {
     const t = parseQuick(quick);
     if (!t) {
       setQuickInvalid(true);
+      return;
+    }
+    if (EXTERNAL.includes(t.protocol)) {
+      launchExternal(t.protocol, t.host, t.port, t.username).then(() => showToast(`Opened ${t.host} in the ${PROTOCOL_LABEL[t.protocol]} client`), (e) => showToast(String(e)));
+      setQuick("");
       return;
     }
     const title = t.protocol === "serial" ? t.serialPort : t.username ? `${t.username}@${t.host}` : t.host;
@@ -594,6 +636,81 @@ export default function App() {
     if (b) showToast(`Bookmark ${b.id} added. Find it in the command palette.`);
   }
 
+  /* ---------- windows, layouts, completion ---------- */
+
+  function connectInWindow(d: Device) {
+    openWindow(`connect=${d.id}`).catch((e) => showToast(String(e)));
+  }
+
+  const askName = useCallback((title: string, confirm: string, placeholder?: string) => new Promise<string | null>((resolve) => setNaming({ title, confirm, placeholder, resolve })), []);
+
+  async function saveLayout() {
+    const deviceIds = tabs.map((t) => t.deviceId).filter((id): id is string => !!id);
+    if (deviceIds.length === 0) {
+      showToast("Only tabs opened from saved devices go in a layout");
+      return;
+    }
+    const name = await askName("Save this layout", "Save", "Layout name, such as Site A core");
+    if (!name) return;
+    const next = [...layouts.filter((l) => l.name !== name), { name, deviceIds, split: split ? splitDir : null, savedAt: Date.now() }];
+    setLayouts(next);
+    await saveData("workspace", next).catch(() => {});
+    showToast(`Saved layout ${name} (${deviceIds.length} device${deviceIds.length === 1 ? "" : "s"})`);
+  }
+
+  async function openLayout(l: Layout) {
+    let opened = 0;
+    for (const id of l.deviceIds) {
+      const d = devicesRef.current.find((x) => x.id === id);
+      if (!d) continue;
+      if (tabsRef.current.some((t) => t.deviceId === id && t.state !== "closed" && t.state !== "error")) continue;
+      await connectDevice(d);
+      opened++;
+    }
+    if (l.split) setTimeout(() => splitPane(l.split!), 100);
+    showToast(opened ? `Opened ${opened} device${opened === 1 ? "" : "s"} from ${l.name}` : `${l.name}: everything is already open`);
+  }
+
+  async function deleteLayout(l: Layout) {
+    const next = layouts.filter((x) => x.name !== l.name);
+    setLayouts(next);
+    await saveData("workspace", next).catch(() => {});
+  }
+
+  /** Ctrl+Space: ask the device what can follow what is typed, with its own `?`. */
+  async function completeLine() {
+    const t = tabsRef.current.find((x) => x.key === activeKey);
+    if (!t || t.state !== "connected" || !t.session.backendId) return;
+    const partial = t.session.currentCommand();
+    if (partial === null) {
+      showToast("Completion works at a device prompt");
+      return;
+    }
+    setCompletions({ tabKey: t.key, partial, items: [], loading: true });
+    try {
+      const items = await complete(t.session.backendId, partial);
+      setCompletions((c) => (c && c.tabKey === t.key ? { ...c, items, loading: false } : c));
+    } catch (e) {
+      setCompletions(null);
+      showToast(String(e));
+    }
+  }
+
+  function pickCompletion(word: string) {
+    const c = completions;
+    setCompletions(null);
+    const t = tabsRef.current.find((x) => x.key === c?.tabKey);
+    if (!c || !t) return;
+    if (word === "<cr>") {
+      t.session.send("\r");
+      return;
+    }
+    // finish the word being typed, or add the next one
+    const typed = c.partial.endsWith(" ") || !c.partial ? "" : c.partial.split(" ").pop() ?? "";
+    const rest = word.toLowerCase().startsWith(typed.toLowerCase()) ? word.slice(typed.length) : (typed ? " " : "") + word;
+    t.session.send(`${rest} `);
+  }
+
   /* ---------- command palette ---------- */
 
   const mod = isMac ? "⌘" : "Ctrl";
@@ -607,6 +724,15 @@ export default function App() {
     action("add", "Add device", () => setEditing({ device: newDevice(), isNew: true }));
     action("close", "Close tab", () => active && void closeTab(active.key), `${mod}+Shift+W`, !!active);
     action("dup", "Duplicate session in a new tab", () => active && openTab(active.title, active.session.spec, active.deviceId), undefined, !!active);
+    action("window", "New window", () => void openWindow("").catch((e) => showToast(String(e))), `${mod}+Shift+N`);
+    action("devwindow", "Open this device in a new window", () => activeDevice && connectInWindow(activeDevice), undefined, !!activeDevice && !EXTERNAL.includes(activeDevice.protocol));
+    action("complete", "Complete the command (device ? help)", () => void completeLine(), "Ctrl+Space", !!active && active.state === "connected");
+    action("files", "Files: SFTP / SCP transfer", () => { setToolsSection("files"); setToolsOpen(true); }, undefined, !!active);
+    action("savelayout", "Save open tabs as a layout", () => void saveLayout(), undefined, tabs.length > 0);
+    for (const l of layouts) {
+      action(`layout-${l.name}`, `Open layout: ${l.name}`, () => void openLayout(l));
+      action(`dellayout-${l.name}`, `Delete layout: ${l.name}`, () => void deleteLayout(l));
+    }
     action("splitr", split && splitDir === "row" ? "Unsplit" : "Split right", () => splitPane("row"), `${mod}+Shift+D`, !!active);
     action("splitd", split && splitDir === "column" ? "Unsplit" : "Split down", () => splitPane("column"), `${mod}+Shift+E`, !!active);
     action("reconnect", "Reconnect", () => active && void active.session.reconnect(), `${mod}+Shift+R`, !!active && active.state !== "connected");
@@ -657,7 +783,7 @@ export default function App() {
     }
     return palette.only ? items.filter((i) => i.group === palette.only) : items;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [palette, tabs, devices, snippets, history, active, split, splitDir, sidebarOpen]);
+  }, [palette, tabs, devices, snippets, history, active, split, splitDir, sidebarOpen, layouts]);
 
   /* ---------- keyboard ---------- */
 
@@ -676,6 +802,8 @@ export default function App() {
         const t = tabsRef.current[parseInt(e.code.slice(5), 10) - 1];
         if (t) activate(t.key);
       } else if (key === "f6" && split) setFocusSlot((f) => 1 - f);
+      else if (e.ctrlKey && !e.shiftKey && !e.altKey && e.code === "Space") void completeLine();
+      else if (modKey && e.shiftKey && key === "n") void openWindow("").catch((err) => showToast(String(err)));
       else if (modKey && e.shiftKey && key === "p") setPalette({ initial: "" });
       else if (modKey && !e.shiftKey && key === "k") setPalette({ initial: "" });
       else if (modKey && e.shiftKey && key === "h") active && setPalette({ initial: "", only: "History", placeholder: "Search command history" });
@@ -745,6 +873,7 @@ export default function App() {
           onGroupBy={(groupBy) => setSettings((s) => ({ ...s, groupBy }))}
           onResize={setSidebarWidth}
           onConnect={(d) => void connectDevice(d)}
+          onConnectWindow={connectInWindow}
           onAdd={(preset) => setEditing({ device: { ...newDevice("ssh"), ...preset }, isNew: true })}
           onEdit={(device) => setEditing({ device, isNew: false })}
           onDuplicate={(d) => setEditing({ device: { ...d, id: crypto.randomUUID(), name: `${d.name} copy`, favorite: false, lastConnected: null }, isNew: true })}
@@ -818,7 +947,11 @@ export default function App() {
                       void closeTab(t.key);
                     } else activate(t.key);
                   }}
-                  title={`${t.title}\n${STATE_LABEL[t.state]}: ${t.message}${i < 9 ? `\nAlt+${i + 1}` : ""}`}
+                  title={`${t.title}\n${STATE_LABEL[t.state]}: ${t.message}${i < 9 ? `\nAlt+${i + 1}` : ""}${d && !EXTERNAL.includes(d.protocol) ? "\nRight-click: open in a new window" : ""}`}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    if (d && !EXTERNAL.includes(d.protocol)) connectInWindow(d);
+                  }}
                 >
                   <span className={`dot ${t.state}`} role="img" aria-label={STATE_LABEL[t.state]} />
                   {env.short && <span className="env-badge" style={{ ["--env" as string]: env.color }}>{env.short}</span>}
@@ -876,6 +1009,8 @@ export default function App() {
                   <li><span>Tools: checks, configs, workflows</span><kbd>{mod}+Shift+I</kbd></li>
                   <li><span>Assistant</span><kbd>{mod}+Shift+A</kbd></li>
                   <li><span>Broadcast to sessions</span><kbd>{mod}+Shift+L</kbd></li>
+                  <li><span>Complete a command (device ? help)</span><kbd>Ctrl+Space</kbd></li>
+                  <li><span>New window</span><kbd>{mod}+Shift+N</kbd></li>
                   <li><span>Find in output</span><kbd>{mod}+Shift+F</kbd></li>
                   <li><span>Bookmark a line</span><kbd>{mod}+Shift+M</kbd></li>
                   <li><span>Switch tab</span><kbd>Ctrl+Tab · Alt+1…9</kbd></li>
@@ -936,6 +1071,9 @@ export default function App() {
               </button>
             </form>
           )}
+          {completions && completions.tabKey === activeKey && (
+            <Completions items={completions.items} partial={completions.partial} loading={completions.loading} onPick={pickCompletion} onClose={() => { setCompletions(null); active?.session.focus(); }} />
+          )}
           {toast && <div className="toast" role="status">{toast}</div>}
         </div>
         {toolsOpen && (
@@ -957,6 +1095,7 @@ export default function App() {
             getSelection={() => active?.session.selection() ?? ""}
             getRecent={() => active?.session.recentOutput(120) ?? ""}
             onOpenSettings={() => setSettingsOpen(true)}
+            spec={active?.session.spec ?? null}
           />
         )}
         </div>
@@ -1013,6 +1152,7 @@ export default function App() {
           onClose={() => { setPalette(null); active?.session.focus(); }}
         />
       )}
+      {naming && <NameDialog title={naming.title} confirm={naming.confirm} placeholder={naming.placeholder} onResult={(n) => { naming.resolve(n); setNaming(null); active?.session.focus(); }} />}
       {confirm && (
         <ConfirmDialog
           title={confirm.title}

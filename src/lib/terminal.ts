@@ -202,6 +202,12 @@ export class TerminalSession {
     return buf.getLine(buf.baseY + buf.cursorY)?.translateToString(true) ?? "";
   }
 
+  /** What is typed after the device prompt on the cursor line, if at a prompt. */
+  currentCommand(): string | null {
+    const p = parsePrompt(this.cursorLine());
+    return p ? p.command : null;
+  }
+
   /** Enter was pressed: record what was typed after the device prompt. */
   private captureCommand() {
     const p = parsePrompt(this.cursorLine());

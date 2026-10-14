@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { listSerialPorts, secretExists } from "../lib/backend";
 import {
   DEFAULT_PORT, ENVIRONMENTS, type AuthMethod, type Device, type Environment, type FlowControl, type Parity,
-  type Protocol, type SerialPortInfo,
+  PROTOCOL_LABEL, type Protocol, type SerialPortInfo,
 } from "../lib/types";
 
 export type SecretChange = { kind: "keep" } | { kind: "set"; value: string } | { kind: "delete" };
@@ -104,12 +104,13 @@ export default function DeviceDialog({ device, isNew, devices, onSave, onCancel 
   }
 
   const serial = d.protocol === "serial";
+  const external = d.protocol === "rdp" || d.protocol === "vnc";
   const sections: { id: Section; label: string; show: boolean }[] = [
     { id: "general", label: "General", show: true },
     { id: "location", label: "Location", show: true },
     { id: "login", label: "Login", show: true },
     { id: "serial", label: "Serial", show: serial },
-    { id: "session", label: "Session", show: true },
+    { id: "session", label: "Session", show: !external },
   ];
 
   return (
@@ -126,13 +127,14 @@ export default function DeviceDialog({ device, isNew, devices, onSave, onCancel 
           <div className="form">
             <label>Connection</label>
             <div className="segmented">
-              {(["ssh", "telnet", "serial"] as Protocol[]).map((p) => (
+              {(["ssh", "telnet", "serial", "rdp", "vnc"] as Protocol[]).map((p) => (
                 <button type="button" key={p} className={d.protocol === p ? "on" : ""} onClick={() => setProtocol(p)}>
-                  {p === "ssh" ? "SSH" : p === "telnet" ? "Telnet" : "Serial"}
+                  {PROTOCOL_LABEL[p]}
                 </button>
               ))}
             </div>
             {d.protocol === "telnet" && <div className="hint warn-text">Telnet is unencrypted: passwords and configs cross the network in clear text.</div>}
+            {external && <div className="hint">Opens in the system's {PROTOCOL_LABEL[d.protocol]} client (Remote Desktop, FreeRDP or Remmina; Screen Sharing, TigerVNC or Remmina). It asks for the password itself.</div>}
 
             <label>Name</label>
             <input autoFocus value={d.name} onChange={(e) => set("name", e.target.value)} placeholder="core-sw1" spellCheck={false} />
@@ -211,7 +213,7 @@ export default function DeviceDialog({ device, isNew, devices, onSave, onCancel 
               </>
             )}
 
-            {d.protocol !== "ssh" && (
+            {d.protocol !== "ssh" && !external && (
               <label className="check">
                 <input type="checkbox" checked={d.autoLogin} onChange={(e) => set("autoLogin", e.target.checked)} />
                 Log in automatically at the Username and Password prompts

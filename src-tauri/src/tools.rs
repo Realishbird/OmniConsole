@@ -324,3 +324,51 @@ pub async fn save_bundle(app: AppHandle, name: String, files: Vec<BundleFile>, m
 pub fn classify_commands(commands: Vec<String>) -> Vec<crate::cisco::classify::Classified> {
     crate::cisco::classify::classify(&commands)
 }
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Completion {
+    pub word: String,
+    pub help: String,
+}
+
+/// Ask the device what can follow `partial` with its own `?` help. The
+/// typed text is restored afterwards (Ctrl-U clears the line, then the
+/// partial is typed again), so the terminal shows a brief flicker only.
+#[tauri::command]
+pub async fn complete(sessions: State<'_, SessionManager>, id: String, partial: String) -> CmdResult<Vec<Completion>> {
+    let partial = partial.trim_start().to_string();
+    if partial.contains(['\r', '\n', '?']) {
+        return Err("nothing to complete".into());
+    }
+    // the text already typed is on the device's line; send only the ?
+    let raw = sessions.probe(&id, b"?", Duration::from_millis(400), Duration::from_secs(4)).await.map_err(err)?;
+    // clear the re-echoed line and type the partial again
+    let mut restore = vec![0x15u8];
+    restore.extend_from_slice(partial.as_bytes());
+    sessions.write(&id, restore);
+    let text = crate::session::runner::strip_controls(&raw);
+    let mut out = Vec::new();
+    let last_word_partial = !partial.is_empty() && !partial.ends_with(' ');
+    let prefix = if last_word_partial { partial.rsplit(' ').next().unwrap_or("").to_lowercase() } else { String::new() };
+    for line in text.lines() {
+        let l = line.trim_end();
+        if l.trim().is_empty() || l.contains('%') || l.trim_start().starts_with('^') || crate::session::runner::prompt_regex().is_match(l) {
+            continue;
+        }
+        // "  interface    Select an interface to configure" or just "  WORD"
+        let trimmed = l.trim_start();
+        let (word, help) = match trimmed.find("  ") {
+            Some(pos) => (&trimmed[..pos], trimmed[pos..].trim()),
+            None => (trimmed, ""),
+        };
+        let word = word.trim();
+        if word.is_empty() || word.contains(' ') && help.is_empty() && word.len() > 24 {
+            continue;
+        }
+        if last_word_partial && !word.to_lowercase().starts_with(&prefix) && word != "<cr>" {
+            continue;
+        }
+        out.push(Completion { word: word.to_string(), help: help.to_string() });
+    }
+    Ok(out)
+}

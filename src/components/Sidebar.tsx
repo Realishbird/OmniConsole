@@ -10,6 +10,7 @@ interface Props {
   onGroupBy: (g: GroupBy) => void;
   onResize: (width: number) => void;
   onConnect: (device: Device) => void;
+  onConnectWindow: (device: Device) => void;
   onAdd: (preset?: Partial<Device>) => void;
   onEdit: (device: Device) => void;
   onDuplicate: (device: Device) => void;
@@ -238,6 +239,7 @@ export default function Sidebar(props: Props) {
             {menu.device && (
               <>
                 <button onClick={() => props.onConnect(menu.device!)}><b>Connect</b></button>
+                {menu.device.protocol !== "rdp" && menu.device.protocol !== "vnc" && <button onClick={() => props.onConnectWindow(menu.device!)}>Connect in a new window</button>}
                 <button onClick={() => props.onToggleFavorite(menu.device!)}>{menu.device.favorite ? "Remove from favorites" : "Add to favorites"}</button>
                 <button onClick={() => props.onEdit(menu.device!)}>Edit…</button>
                 <button onClick={() => props.onDuplicate(menu.device!)}>Duplicate…</button>

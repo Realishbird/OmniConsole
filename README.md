@@ -73,7 +73,13 @@ Runs on Windows (x64, ARM64), macOS (Apple Silicon, Intel) and Linux (x64, ARM64
 
 **Themes**: Midnight, Graphite, Nord, Dracula, Solarized Dark and Light. Fonts, size, spacing, cursor, contrast and the 16 ANSI colors are adjustable; compact and comfortable layouts.
 
-Planned next: SFTP/SCP file transfer, detachable windows, RDP/VNC, command autocomplete.
+### Batch 5: files, windows, RDP/VNC, completion
+- **Files** tab in the tools panel: an SFTP browser (list, download, upload, rename, delete, new folder) over a second SSH connection with the same login and prompts. Devices without SFTP (classic IOS with `ip scp server enable`) fall back to SCP by path, so `flash:` images and configs still move both ways with progress.
+- **RDP and VNC devices** sit in the same device list and open in the system's own client (Remote Desktop / FreeRDP / Remmina, Screen Sharing / TigerVNC). Quick connect understands `rdp host` and `vnc host:5901`.
+- **New windows** (`Ctrl/Cmd+Shift+N`, right-click a tab, or "Connect in a new window" on a device) for a second screen. **Layouts** save the open devices and split as a named set to reopen later (palette: Save open tabs as a layout / Open layout).
+- **Ctrl+Space completion** at a device prompt: OmniConsole asks the device with its own `?`, shows the choices with their help text, and restores the line you were typing.
+
+Planned next: SNMP/NetBox lookups, a device inventory view, session recording playback.
 
 ## Shortcuts
 
@@ -88,6 +94,8 @@ Planned next: SFTP/SCP file transfer, detachable windows, RDP/VNC, command autoc
 | Ctrl/Cmd+Shift+I | Tools panel: checks, workflows, configs, workstation tools |
 | Ctrl/Cmd+Shift+A | Assistant |
 | Ctrl/Cmd+Shift+L | Broadcast to sessions |
+| Ctrl+Space | Complete the command with the device's `?` help |
+| Ctrl/Cmd+Shift+N | New window |
 | Ctrl/Cmd+Shift+F | Find in output |
 | Ctrl/Cmd+Shift+H | Command history |
 | Ctrl/Cmd+Shift+O | Snippets |

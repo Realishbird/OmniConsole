@@ -5,6 +5,8 @@ mod ai;
 mod cisco;
 mod commands;
 mod deploy;
+mod files;
+mod launch;
 mod nettools;
 mod redact;
 mod session;
@@ -22,6 +24,7 @@ pub fn run() {
         .manage(tools::ToolState::default())
         .manage(nettools::NetJobs::default())
         .manage(ai::AiJobs::default())
+        .manage(files::FilesState::default())
         .invoke_handler(tauri::generate_handler![
             commands::session_open,
             commands::session_write,
@@ -76,6 +79,17 @@ pub fn run() {
             deploy::deploy_rollback,
             deploy::firmware_inspect,
             deploy::firmware_plan,
+            tools::complete,
+            files::files_open,
+            files::files_close,
+            files::files_list,
+            files::files_mkdir,
+            files::files_delete,
+            files::files_rename,
+            files::files_download,
+            files::files_upload,
+            launch::launch_external,
+            launch::open_window,
         ])
         .run(tauri::generate_context!())
         .expect("error while running OmniConsole");

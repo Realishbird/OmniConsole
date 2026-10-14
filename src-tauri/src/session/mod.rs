@@ -6,7 +6,7 @@ pub mod autologin;
 mod log;
 pub mod runner;
 mod serial;
-mod ssh;
+pub mod ssh;
 mod telnet;
 
 use std::collections::HashMap;
@@ -243,6 +243,48 @@ impl SessionManager {
             io.log.lock().unwrap().take();
         });
         id
+    }
+
+    /// A prompt-only session for a file transfer connection: it gets an id
+    /// the UI can answer prompts on, and an `Io` whose terminal output goes
+    /// nowhere. Close it with `close` like any session.
+    pub fn register_aux(&self, id: String, config_dir: PathBuf, events: Channel<SessionEvent>) -> Io {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let pending = Arc::new(Mutex::new(None));
+        let capture = Arc::new(runner::Capture::default());
+        let io = Io { config_dir, data: Channel::new(|_| Ok(())), events, pending: pending.clone(), log: Arc::new(Mutex::new(None)), capture: capture.clone() };
+        self.sessions.lock().unwrap().insert(id, Handle { input: tx, pending, capture, busy: Arc::new(tokio::sync::Mutex::new(())) });
+        io
+    }
+
+    /// Send raw bytes (no CR added) and collect what comes back until the
+    /// device is quiet for `quiet`. For `?` completion.
+    pub async fn probe(&self, id: &str, bytes: &[u8], quiet: std::time::Duration, timeout: std::time::Duration) -> anyhow::Result<String> {
+        let (input, capture, busy) = {
+            let sessions = self.sessions.lock().unwrap();
+            let h = sessions.get(id).ok_or_else(|| anyhow::anyhow!("the session is closed"))?;
+            (h.input.clone(), h.capture.clone(), h.busy.clone())
+        };
+        let _guard = busy.lock().await;
+        capture.start();
+        let _ = input.send(Input::Data(bytes.to_vec()));
+        let deadline = tokio::time::Instant::now() + timeout;
+        let mut last_len = 0;
+        let mut last_change = tokio::time::Instant::now();
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+            let len = capture.text().len();
+            if len != last_len {
+                last_len = len;
+                last_change = tokio::time::Instant::now();
+            } else if len > 0 && last_change.elapsed() >= quiet {
+                break;
+            }
+            if tokio::time::Instant::now() > deadline {
+                break;
+            }
+        }
+        Ok(String::from_utf8_lossy(&capture.stop()).into_owned())
     }
 
     fn send(&self, id: &str, input: Input) {
