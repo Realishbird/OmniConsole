@@ -1,85 +1,90 @@
 # OmniConsole
 
-A cross-platform terminal for network engineers: SSH, Telnet and serial console in tabs in one window, with saved devices.
+A terminal for network engineers. SSH, Telnet and serial consoles in tabs, saved devices, health checks, config backups, an AI assistant that proposes commands you review before they run, and reviewed deployments with backup and rollback. One app on Windows (x64, ARM64), macOS (Apple Silicon, Intel) and Linux (x64, ARM64).
 
-Runs on Windows (x64, ARM64), macOS (Apple Silicon, Intel) and Linux (x64, ARM64).
+Nothing changes a device without you: read-only commands run on approval, configuration changes need a second confirmation, a backup is taken first, and every change is recorded.
 
-## Features
+## Install
 
-**Connections**
-- SSH with password, key file (with passphrase) or SSH agent login (ssh-agent, OpenSSH agent for Windows, Pageant), plus legacy algorithms for older Cisco gear (diffie-hellman-group1/14-sha1, ssh-rsa, AES-CBC, 3DES)
-- Jump hosts: connect through another saved SSH device
-- Telnet with option negotiation, window size and BREAK
-- Serial console with port picker, baud rate, data bits, parity, stop bits, flow control and a break signal for ROMMON
-- Every session opens as a tab in one window; split the window right or down to watch two sessions
-- Keepalives, automatic reconnect per device, a reconnect banner when a session drops
+Every push builds installers for all six platforms. Open the latest run under [Actions](https://github.com/Realishbird/OmniConsole/actions), scroll to **Artifacts** and download `OmniConsole-<platform>`:
 
-**Saved devices**
-- Organized by customer, site, building, rack, device role, environment and tags; group the sidebar by any of them
-- Search every field, or filter with `role:core`, `tag:stack`, `env:production`
-- Favorites, recent sessions, import (OmniConsole JSON or CSV) and export (never includes passwords)
-- Production, staging, lab and customer environments color the tab and the status bar; the status bar also shows the protocol, the host name from the prompt, and the privilege level (user EXEC, privileged, config mode)
+| Platform | Artifact | Installer |
+| --- | --- | --- |
+| Windows x64 | `OmniConsole-windows-x64` | `.msi` or `.exe` |
+| Windows ARM64 | `OmniConsole-windows-arm64` | `.exe` |
+| macOS Apple Silicon | `OmniConsole-macos-arm64` | `.dmg` |
+| macOS Intel | `OmniConsole-macos-x64` | `.dmg` |
+| Linux x64 | `OmniConsole-linux-x64` | `.deb`, `.rpm` or `.AppImage` |
+| Linux ARM64 | `OmniConsole-linux-arm64` | `.deb`, `.rpm` or `.AppImage` |
 
-**Terminal**
-- Command palette (Ctrl/Cmd+Shift+P): actions, devices, snippets, bookmarks and command history
-- Searchable command history, reusable snippets, output bookmarks
-- Optional highlighting of IP and MAC addresses, interface names, syslog severities, errors and up/down states
-- Session logging to `Documents/OmniConsole/Logs/<date>/`, with optional timestamps; passwords, secrets, SNMP communities and keys are masked
-- Copy on select, right-click paste, confirmation before multi-line pastes, find in scrollback, save output or a selection to a file
+The builds are unsigned. Windows SmartScreen and macOS Gatekeeper will ask once; on macOS use right-click → Open the first time.
 
-**Health checks** (Tools panel, Ctrl/Cmd+Shift+I)
-- Detects the platform from `show version` (IOS, IOS-XE, NX-OS, IOS-XR, ASA, Small Business SG/CBS, CatOS) and runs the right read-only `show` commands, with paging turned off for the session
-- 20 checks graded pass / warning / fail / unknown with the output lines behind each verdict and the follow-up commands to run next: system and uptime, CPU, memory, temperature, power supplies, fans, stack, redundancy, interface errors and discards, speed/duplex/err-disabled, PoE budget, VLANs and trunks, port channels, spanning tree, OSPF/BGP/EIGRP neighbors, recent log messages, CDP/LLDP neighbors, IP interfaces, MAC and ARP tables
-- Parsed tables with a filter box, a selection of which checks run, repeat every 5/15/60 minutes while the tab is open, cancel at any time
-- Save a run as a baseline and compare later runs with it; save a diagnostic bundle (zip of the summary, facts, results and every raw output) with secrets masked
+## Getting started
 
-**Config backups**
-- Back up the running and startup config to `Documents/OmniConsole/Configs/<site>/<device>/<timestamp>_running.cfg`
-- Every new running-config backup is diffed against the previous one; diff any two backups, or a backup against the live running config, with timestamps and certificate blocks ignored
-- Search across the newest backup of every device (or every version), plain text or regular expression
-- Run any command and capture its output while it still shows in the terminal; the pager is answered for you
+1. **Add a device** (sidebar `+`, or the palette) with its protocol, address, login and where it lives: customer, site, building, rack, role, environment, tags.
+2. **Connect**: double-click it, or type in quick connect: `ssh admin@10.0.0.1`, `telnet 10.0.0.5 2001`, `COM3 9600`, `rdp 10.0.0.9`.
+3. **Open the tools panel** (`Ctrl/Cmd+Shift+I`) next to the terminal. Each console tab keeps its own checks, chat and progress.
+4. **Run health checks**, ask the assistant, back up the config, or deploy a template. Anything that changes the device shows you the exact lines first.
 
-**Assistant** (Tools panel → Assistant, Ctrl/Cmd+Shift+A)
-- Providers: Ollama and LM Studio on this computer (suggested model Qwen3 8B), OpenAI, Anthropic, or any OpenAI-compatible endpoint; API keys live in the OS keychain
-- Explain selected output, suggest next steps from the latest health check, interpret diagnostics, generate configuration, all tailored to the detected OS and version
-- Answers separate what the output verifies from what the model infers, and ask for the missing show command instead of guessing
-- Every proposed command appears as a card classified read-only, configuration change or disruptive. Read-only commands run on approval; configuration changes need a review checkbox and a second confirmation, take a running-config backup first and write an audit entry; disruptive commands also need the device name typed; production devices stay locked until unlocked for the tab
-- Passwords, secrets, SNMP communities, keys and certificate bodies are replaced with `<removed>` before anything leaves the app; sharing of output, configuration text and device names can each be turned off
+Passwords and key passphrases go in the operating system's credential store (Windows Credential Manager, macOS Keychain, Linux Secret Service). They are never written to files, logs, exports or AI requests.
 
-**Workstation tools** (run from this computer, not the device)
-- Ping, traceroute, DNS lookup (any record type, optional server), TCP port check, path MTU discovery, subnet calculator with splitting
+## What it does
 
-**Guided troubleshooting**
-- Step-by-step read-only workflows for tracing a device by IP/MAC to its port (and the neighbor behind it), DHCP, DNS, VLAN, trunking, spanning tree, routing, ACL, wireless and authentication; each step says what to look for and can be handed to the assistant
+### Connections
+- **SSH** with password, key file (with passphrase) or agent (ssh-agent, OpenSSH agent for Windows, Pageant). Legacy algorithms for old Cisco gear: diffie-hellman-group1/14-sha1, ssh-rsa, AES-CBC, 3DES. Jump hosts through another saved device. Host keys are trusted on first use, with a loud warning if one changes.
+- **Telnet** with option negotiation, window size and BREAK. Warns before connecting to a production device.
+- **Serial** console with port picker, baud, data bits, parity, stop bits, flow control, and a break signal for ROMMON.
+- **RDP and VNC** devices in the same list; they open in the system client (Remote Desktop, FreeRDP, Remmina, Screen Sharing, TigerVNC).
+- Automatic login for Telnet and serial at the Username/Password prompts, keepalives, automatic reconnect per device, a reconnect banner when a session drops.
+- Tabs in one window, split right or down, more windows when you want them (`Ctrl/Cmd+Shift+N`, right-click a tab, or "Connect in a new window"), and named **layouts** that reopen a set of devices and the split.
 
-**Templates and reviewed deployment** (Tools panel → Deploy)
-- Nine templates with typed, validated variables: access, access point, camera, voice, trunk, uplink and port-channel ports, VLAN with SVI, and an initial setup for a new switch (hostname, management SVI and VRF, gateway, DNS, NTP, SSH, local admin, logging, SNMPv3, banner); rendered for IOS or NX-OS
-- Every deployment shows the exact lines, backs up the running config, saves a rollback point on the device (`copy running-config flash:` with `configure replace`, or an NX-OS checkpoint), optionally arms `reload in N` as a safety net, sends line by line with progress, stops at the first rejected line, runs verify commands, then lets you save, roll back, or cancel the reload
-- Production devices stay locked until unlocked per tab; disruptive lines need the device name typed; every change is recorded in the audit trail
+### Terminal
+- Command palette (`Ctrl/Cmd+Shift+P`): actions, devices, snippets, bookmarks, command history.
+- **Ctrl+Space completion**: asks the device with its own `?`, shows the options with their help text, and restores what you typed.
+- Highlighting of IP and MAC addresses, interface names, syslog severities, errors, up/down states.
+- Session logs under `Documents/OmniConsole/Logs/<date>/`, optional timestamps, with passwords, secrets, SNMP communities and keys masked.
+- Copy on select, right-click paste, confirmation before multi-line pastes, find in scrollback, bookmarks, save output or a selection to a file, searchable history, snippets.
+- Broadcast a command to selected connected sessions (`Ctrl/Cmd+Shift+L`) behind a red bar, explicit targets and a confirmation that names production devices.
+- Six themes (Midnight, Graphite, Nord, Dracula, Solarized Dark and Light), adjustable font, size, spacing, cursor, contrast and ANSI colors.
 
-**Firmware assistant**
-- Reads the current version, image, boot variable, free flash and stack members, checks the new image's platform family, storage and checksum, and proposes transfer (tftp/ftp/scp/sftp/http/usb), MD5 verification, activation (boot variable, `install add … activate commit`, or NX-OS `install all`) and post-upgrade validation as separate reviewed steps; the reload is always explicit
+### Saved devices
+- Grouped by customer, site, building, rack, role, environment or tag; search any field, or filter with `role:core`, `tag:stack`, `env:production`.
+- Favorites, recents, import (OmniConsole JSON or CSV), export (never includes passwords).
+- Production, staging, lab and customer environments color the tab and the status bar, which also shows the protocol, the host name from the prompt and the privilege level.
 
-**Operations**
-- Installation, cutover and upgrade checklists with a recorded result and note per item, saved per device and exportable
-- Broadcast a command to selected connected sessions (Ctrl/Cmd+Shift+L) with a prominent red bar, explicit target selection and a confirmation that names production targets
-- Audit trail of every configuration change sent, with lines, result and backup path
-- Telnet and serial auto-login with the saved username and password
+### Health checks (Tools → Checks)
+- Detects the platform from `show version` (IOS, IOS-XE, NX-OS, IOS-XR, ASA, Small Business SG/CBS, CatOS) and runs the right read-only commands with paging off.
+- 20 checks graded pass / warning / fail / unknown, each with the output lines behind the verdict and the follow-up commands: system and uptime, CPU, memory, temperature, power, fans, stack, redundancy, interface errors, speed/duplex/err-disabled, PoE, VLANs and trunks, port channels, spanning tree, routing neighbors, recent logs, CDP/LLDP neighbors, IP interfaces, MAC and ARP tables.
+- Parsed tables with a filter, a choice of which checks run, repeat every 5/15/60 minutes, cancel at any time.
+- Save a run as a baseline and compare later runs; save a diagnostic bundle (zip of summary, facts, results and raw output) with secrets masked.
 
-**Security**
-- Passwords and key passphrases live in the OS credential store (Windows Credential Manager, macOS Keychain, Linux Secret Service), never in files or exports
-- Host keys are trusted on first use, with a loud warning if one changes
-- A warning before Telnet to a production device, and before sending snippets to one
+### Config backups (Tools → Configs)
+- Running and startup config to `Documents/OmniConsole/Configs/<site>/<device>/<timestamp>_running.cfg`.
+- Each new backup is diffed against the previous one; diff any two, or a backup against the live config, ignoring timestamps and certificate blocks.
+- Search the newest backup of every device (or every version), plain text or regex.
 
-**Themes**: Midnight, Graphite, Nord, Dracula, Solarized Dark and Light. Fonts, size, spacing, cursor, contrast and the 16 ANSI colors are adjustable; compact and comfortable layouts.
+### Assistant (Tools → Assistant, `Ctrl/Cmd+Shift+A`)
+- Providers: Ollama or LM Studio on this computer (Qwen3 8B suggested), OpenAI, Anthropic, or any OpenAI-compatible endpoint. API keys live in the keychain.
+- Explain selected output, suggest next steps from the latest health check, interpret diagnostics, generate configuration, all tailored to the detected OS and version. Answers separate what the output shows from what the model infers.
+- Proposed commands appear as cards classified **read-only**, **configuration change** or **disruptive**. Read-only cards run on approval; changes need a review checkbox and a second confirmation, take a backup first and write an audit entry; disruptive lines need the device name typed; production devices stay locked until unlocked for that tab.
+- After a card runs, the assistant reads the result on its own: a rejected command comes back corrected, good output is interpreted, up to three rounds.
+- Secrets are replaced with `<removed>` before anything leaves the app. Sharing of output, configuration text and device names can each be turned off.
 
-### Batch 5: files, windows, RDP/VNC, completion
-- **Files** tab in the tools panel: an SFTP browser (list, download, upload, rename, delete, new folder) over a second SSH connection with the same login and prompts. Devices without SFTP (classic IOS with `ip scp server enable`) fall back to SCP by path, so `flash:` images and configs still move both ways with progress.
-- **RDP and VNC devices** sit in the same device list and open in the system's own client (Remote Desktop / FreeRDP / Remmina, Screen Sharing / TigerVNC). Quick connect understands `rdp host` and `vnc host:5901`.
-- **New windows** (`Ctrl/Cmd+Shift+N`, right-click a tab, or "Connect in a new window" on a device) for a second screen. **Layouts** save the open devices and split as a named set to reopen later (palette: Save open tabs as a layout / Open layout).
-- **Ctrl+Space completion** at a device prompt: OmniConsole asks the device with its own `?`, shows the choices with their help text, and restores the line you were typing.
+### Guided troubleshooting (Tools → Workflows)
+Step-by-step read-only workflows: trace a device by IP or MAC to its port and the neighbor behind it, DHCP, DNS, VLAN, trunking, spanning tree, routing, ACL, wireless, authentication. Each step says what to look for and can be handed to the assistant.
 
-Planned next: SNMP/NetBox lookups, a device inventory view, session recording playback.
+### Deploy (Tools → Deploy)
+- **Templates** with typed, validated variables, rendered for IOS or NX-OS: access, access point, camera, voice, trunk, uplink and port-channel ports, VLAN with SVI, and initial setup of a new switch (hostname, management SVI and VRF, gateway, DNS, NTP, SSH, local admin, logging, SNMPv3, banner).
+- **Reviewed deployment**: the exact lines, a running-config backup, a rollback point on the device (`copy running-config flash:` with `configure replace`, or an NX-OS checkpoint), an optional `reload in N` safety net, line-by-line sending with progress that stops at the first rejected line, verify commands, then save, roll back or cancel the reload.
+- **Firmware assistant**: reads version, image, boot variable, free flash and stack members, checks the new image's family, space and checksum, and proposes transfer, MD5 verification, activation (`boot system`, `install add … activate commit`, or NX-OS `install all`) and post-upgrade validation as separate reviewed steps. The reload is always explicit.
+- **Checklists** for installation, cutover and upgrade, with a result and note per item, saved per device and exportable.
+- **Audit** of every configuration change sent: lines, result, backup path.
+
+### Files (Tools → Files)
+An SFTP browser over a second SSH connection with the same login: list, download, upload, rename, delete, new folder, with progress. Devices without SFTP (classic IOS with `ip scp server enable`) fall back to SCP by path, so `flash:` images and configs still move both ways.
+
+### Workstation (Tools → Workstation)
+Ping, traceroute, DNS lookup (any record type, optional server), TCP port check, path MTU discovery and a subnet calculator, run from this computer rather than the device.
 
 ## Shortcuts
 
@@ -90,12 +95,12 @@ Planned next: SNMP/NetBox lookups, a device inventory view, session recording pl
 | Ctrl/Cmd+Shift+W | Close tab |
 | Ctrl+Tab, Alt+1…9 | Switch tab |
 | Ctrl/Cmd+Shift+D / E | Split right / down (again to unsplit); F6 switches panes |
-| Ctrl/Cmd+Shift+B | Toggle sidebar |
-| Ctrl/Cmd+Shift+I | Tools panel: checks, workflows, configs, workstation tools |
-| Ctrl/Cmd+Shift+A | Assistant |
-| Ctrl/Cmd+Shift+L | Broadcast to sessions |
-| Ctrl+Space | Complete the command with the device's `?` help |
 | Ctrl/Cmd+Shift+N | New window |
+| Ctrl/Cmd+Shift+B | Toggle sidebar |
+| Ctrl/Cmd+Shift+I | Tools panel |
+| Ctrl/Cmd+Shift+A | Assistant |
+| Ctrl+Space | Complete the command with the device's `?` help |
+| Ctrl/Cmd+Shift+L | Broadcast to sessions |
 | Ctrl/Cmd+Shift+F | Find in output |
 | Ctrl/Cmd+Shift+H | Command history |
 | Ctrl/Cmd+Shift+O | Snippets |
@@ -106,18 +111,32 @@ Planned next: SNMP/NetBox lookups, a device inventory view, session recording pl
 | Ctrl/Cmd+, | Settings |
 | Ctrl/Cmd + / - / 0 | Font size |
 
-## Build
+## Where things are stored
 
-You need Node 22+, Rust stable and the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/). On Linux, also install `libudev-dev`.
+| What | Where |
+| --- | --- |
+| Devices, snippets, history, settings, layouts, checklists, audit | the app's config folder (`%APPDATA%\OmniConsole`, `~/Library/Application Support/OmniConsole`, `~/.config/OmniConsole`) |
+| Passwords, passphrases, API keys | the OS credential store |
+| Session logs | `Documents/OmniConsole/Logs/<date>/` |
+| Config backups, reports, bundles | `Documents/OmniConsole/Configs/` (changeable in Settings) |
+
+## Build from source
+
+Node 22+, Rust stable and the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/). On Linux also `libudev-dev` and `libdbus-1-dev`.
 
 ```sh
 npm ci
 npm run tauri dev     # run in development
-npm run tauri build   # build installers
+npm run tauri build   # build the installer for this machine
+cd src-tauri && cargo test   # backend tests (parsers, checks, templates, SCP/SFTP helpers)
 ```
 
-Every push builds installers for all six platforms through GitHub Actions. Download them from the run's Artifacts.
+## How it is built
 
-## Stack
+- **Backend**: Rust with Tauri 2. `session/` holds the SSH (russh), Telnet and serial (serialport) sessions plus the capture-based command runner; `cisco/` the OS detection, parsers, 20 checks, config diffing, command classification, templates and firmware planning; `ai.rs` the providers; `deploy.rs` the reviewed deployment; `files.rs` SFTP and SCP; `nettools.rs` the workstation tools; `store.rs` devices and the keyring.
+- **Frontend**: React, TypeScript and xterm.js. `App.tsx` owns tabs, panes and shortcuts; `components/ToolsPanel.tsx` the tools sections, each keeping state per console tab.
+- **CI**: `.github/workflows/build.yml` builds all six platforms and runs the backend tests.
 
-Tauri 2 (Rust) backend with russh, serialport and keyring; React and xterm.js frontend.
+## Roadmap
+
+Everything above is in. Ideas for later: SNMP and NetBox lookups, an inventory view across devices, session recording playback, scheduled backups.
