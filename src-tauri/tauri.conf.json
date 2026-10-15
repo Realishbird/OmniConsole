@@ -49,7 +49,8 @@
       "minimumSystemVersion": "11.0"
     },
     "resources": {
-      "binaries/llama/**/*": "llama/"
+      "binaries/llama/*": "llama/",
+      "binaries/llama-cpu/*": "llama-cpu/"
     }
   }
 }

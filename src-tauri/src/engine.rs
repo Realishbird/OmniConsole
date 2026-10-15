@@ -281,10 +281,11 @@ fn prepared_runtime(app: &AppHandle) -> Result<(PathBuf, String)> {
         }
         fs::create_dir_all(&dest)?;
         copy_files(&src, &dest)?;
-        // the CPU build, when CI added one, is the fallback for a broken GPU driver
-        if src.join("cpu").join(server_name()).is_file() {
+        // the CPU build, when CI added one (bundled as llama-cpu/), is the fallback for a broken GPU driver
+        let cpu_src = src.parent().map(|p| p.join("llama-cpu")).unwrap_or_default();
+        if cpu_src.join(server_name()).is_file() {
             fs::create_dir_all(dest.join("cpu"))?;
-            copy_files(&src.join("cpu"), &dest.join("cpu"))?;
+            copy_files(&cpu_src, &dest.join("cpu"))?;
         }
         fs::write(&marker, "ok")?;
     }

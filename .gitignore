@@ -8,3 +8,5 @@ src-tauri/gen/schemas/
 # built-in model runtime, fetched by CI (see src-tauri/binaries/llama/README.txt)
 src-tauri/binaries/llama/*
 !src-tauri/binaries/llama/README.txt
+src-tauri/binaries/llama-cpu/*
+!src-tauri/binaries/llama-cpu/README.txt

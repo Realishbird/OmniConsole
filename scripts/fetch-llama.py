@@ -6,8 +6,8 @@ Usage: fetch-llama.py <target name> <output dir> [release tag]
 The target name is the CI matrix name (windows-x64, windows-arm64, macos-arm64,
 macos-x64, linux-x64, linux-arm64). The newest llama.cpp release is used unless
 a tag is given. GPU builds are preferred (Vulkan on Windows and Linux, Metal is
-part of the macOS build); on Windows and Linux x64 the CPU build goes into a
-`cpu/` subfolder as a fallback for machines without a working Vulkan driver.
+part of the macOS build); on Windows and Linux x64 the CPU build goes into the
+sibling folder `llama-cpu/` as a fallback for machines without a working Vulkan driver.
 When no asset matches a target the folder gets an UNAVAILABLE marker and the
 app offers Ollama, LM Studio and cloud providers instead.
 """
@@ -131,10 +131,17 @@ def main():
         return
     print(f"runtime: {main_asset['name']}")
     extract(main_asset, out)
+    # the CPU build goes in a sibling folder (binaries/llama-cpu): a subfolder would be
+    # flattened into llama/ by the resource glob and make the MSI build fail on duplicates
+    cpu_out = os.path.join(os.path.dirname(os.path.normpath(out)), "llama-cpu")
+    os.makedirs(cpu_out, exist_ok=True)
+    for n in os.listdir(cpu_out):
+        if n != "README.txt":
+            os.remove(os.path.join(cpu_out, n))
     fallback = pick(assets, CPU_FALLBACK.get(target, []))
     if fallback and fallback["name"] != main_asset["name"]:
         print(f"cpu fallback: {fallback['name']}")
-        extract(fallback, os.path.join(out, "cpu"))
+        extract(fallback, cpu_out)
     with open(os.path.join(out, "VERSION"), "w") as f:
         f.write(release["tag_name"] + "\n")
 
