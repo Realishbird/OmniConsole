@@ -174,7 +174,21 @@ pub fn data_load(dir: &Path, kind: &str) -> Result<serde_json::Value> {
 }
 
 pub fn data_save(dir: &Path, kind: &str, value: &serde_json::Value) -> Result<()> {
+    // the audit trail keeps the commands that ran; template secrets and
+    // type-7 passwords in them are masked before they touch disk
+    let redacted;
+    let value = if kind == "audit" { redacted = redact_json(value.clone()); &redacted } else { value };
     write_atomic(&data_path(dir, kind)?, &serde_json::to_string_pretty(value)?)
+}
+
+/// Mask secrets in every string of a JSON value.
+pub fn redact_json(value: serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::String(s) => serde_json::Value::String(crate::redact::text(&s)),
+        serde_json::Value::Array(a) => serde_json::Value::Array(a.into_iter().map(redact_json).collect()),
+        serde_json::Value::Object(o) => serde_json::Value::Object(o.into_iter().map(|(k, v)| (k, redact_json(v))).collect()),
+        other => other,
+    }
 }
 
 /*
@@ -198,14 +212,18 @@ pub fn export_devices(devices: &[Device]) -> Result<String> {
 /// OmniConsole JSON (file or bare array) or CSV with a header row.
 pub fn parse_import(text: &str) -> Result<Vec<Device>> {
     let trimmed = text.trim_start_matches('\u{feff}').trim();
-    if trimmed.starts_with('{') {
+    let devices = if trimmed.starts_with('{') {
         let file: ExportFile = serde_json::from_str(trimmed).context("not an OmniConsole export")?;
-        return Ok(file.devices);
-    }
-    if trimmed.starts_with('[') {
-        return Ok(serde_json::from_str(trimmed)?);
-    }
-    parse_csv(trimmed)
+        file.devices
+    } else if trimmed.starts_with('[') {
+        serde_json::from_str(trimmed)?
+    } else {
+        parse_csv(trimmed)?
+    };
+    // an imported list never picks a saved credential profile on its own: the
+    // user binds one after looking at the device, so a crafted file cannot
+    // point a stored password at a host of its choosing
+    Ok(devices.into_iter().map(|mut d| { d.credential_id = "-".into(); d }).collect())
 }
 
 fn csv_fields(line: &str) -> Vec<String> {

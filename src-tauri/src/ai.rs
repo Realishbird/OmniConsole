@@ -76,10 +76,20 @@ impl ProviderSpec {
     }
 
     fn local(&self) -> bool {
-        matches!(self.kind.as_str(), "ollama" | "lmstudio") || self.base().contains("127.0.0.1") || self.base().contains("localhost")
+        let host = self.base().split("://").nth(1).unwrap_or("").split('/').next().unwrap_or("").split(':').next().unwrap_or("").to_string();
+        matches!(self.kind.as_str(), "ollama" | "lmstudio") || host == "127.0.0.1" || host == "localhost" || host == "::1" || host.starts_with("10.") || host.starts_with("192.168.")
+    }
+
+    /// An API key never travels in clear: a non-local base URL must be https.
+    fn check_transport(&self) -> Result<()> {
+        if self.base().starts_with("http://") && !self.local() && self.key().is_some() {
+            bail!("{} uses http:// with an API key; use https:// (plain http is only allowed for local providers)", self.base());
+        }
+        Ok(())
     }
 
     fn client(&self) -> Result<reqwest::Client> {
+        self.check_transport()?;
         Ok(reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(if self.local() { 600 } else { 180 }))

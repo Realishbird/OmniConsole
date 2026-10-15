@@ -17,7 +17,16 @@ fn rules() -> &'static [Regex] {
             // enable secret 9 $9$..., username x secret 5 ..., password 7 0822..., NX-OS password 5 $5$...
             // the optional words name the hash type (`secret sha512 $6$`, `password hash`,
             // `plaintext`) or, on AOS-S, the account (`password manager user-name admin plaintext`)
-            r"(?i)\b(?:password|secret)(?:\s+(?:\d{1,2}|sha512|sha256|sha1|md5|hash|plaintext|encrypted|cleartext|type\s*\d+|manager|operator|all|user-name\s+\S+))*\s+(?P<s>\S+)",
+            r"(?i)\b(?:password|secret)(?:\s+(?:\d{1,2}|sha512|sha256|sha1|md5|hash|hashed-password|plaintext|encrypted|cleartext|level\s+\d+|type\s*\d+|manager|operator|all|user-name\s+\S+))*\s+(?P<s>\S+)",
+            // classic IOS "radius-server host X auth-port 1812 key 7 ..." and "tacacs-server host X key Y"
+            r"(?i)\b(?:radius|tacacs)-server\s+host\s+.*?\bkey(?:\s+\d)?\s+(?P<s>\S+)",
+            // OSPF/EIGRP/RIP "authentication-key 7 X", Junos "pre-shared-key ascii-text X", 9800 "psk set-key ascii 0 X"
+            r"(?i)\b(?:authentication-key|ascii-text|hexadecimal|set-key\s+(?:ascii|hex))(?:\s+\d)?\s+(?P<s>\S+)",
+            // "snmp-server host X [traps|informs] [version 2c] COMMUNITY", Junos "set snmp community X"
+            r"(?i)\bsnmp-server\s+host\s+\S+(?:\s+(?:traps|informs|version\s+\S+|udp-port\s+\d+|vrf\s+\S+))*\s+(?P<s>\S+)",
+            r"(?i)\bsnmp\s+community\s+(?P<s>\S+)",
+            // ASA "failover key X", IOS "key config-key password-encrypt X"
+            r"(?i)\b(?:failover\s+key|config-key\s+password-encrypt)\s+(?P<s>\S+)",
             r"(?i)\bsnmp-server\s+community\s+(?P<s>\S+)",
             r"(?i)\b(?:auth\s+(?:md5|sha\S*)|priv\s+(?:des\S*|3des|aes(?:\s+\d+)?))\s+(?P<s>\S+)",
             r"(?i)\b(?:key-string|wpa-psk\s+(?:ascii|hex)|pre-shared-key(?:\s+(?:local|remote|address\s+\S+(?:\s+\S+)?))?|(?:tacacs-server|radius-server|isakmp)\s+key|message-digest-key\s+\d+\s+md5|authentication-key\s+\d+\s+md5|authentication\s+text)(?:\s+\d)?\s+(?P<s>\S+)",
@@ -98,6 +107,15 @@ mod tests {
             ("password manager user-name admin plaintext Secret1", "Secret1"),
             ("username x password 5 $5$salt$hash", "$5$salt$hash"),
             ("enable secret 9 $9$abc", "$9$abc"),
+            ("enable password level 15 7 0822455D0A16", "0822455D0A16"),
+            ("radius-server host 10.0.0.1 auth-port 1812 acct-port 1813 key 7 0822455D0A16", "0822455D0A16"),
+            ("tacacs-server host 10.10.120.12 key 7 112518074648", "112518074648"),
+            (" ip ospf authentication-key 7 0822455D", "0822455D"),
+            ("nv set system aaa user admin password hashed-password $6$abc", "$6$abc"),
+            ("set security ike policy p pre-shared-key ascii-text \"$9$abc\"", "$9$abc"),
+            ("set snmp community public1", "public1"),
+            ("snmp-server host 10.0.0.9 version 2c SECRETCOMM", "SECRETCOMM"),
+            ("failover key fokey1", "fokey1"),
         ] {
             let out = super::line(line);
             assert!(!out.contains(leaked), "{line} -> {out}");

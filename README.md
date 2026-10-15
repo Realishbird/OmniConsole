@@ -33,6 +33,12 @@ If you have an Apple Developer account, the build signs and notarizes the app it
 
 Health checks and collections on Cumulus Linux and SONiC run their privileged commands as `sudo -n`. If your login has no passwordless sudo, the command is retried without sudo, and only when that also fails does the check say it needs root. Nothing ever answers a password prompt on your behalf: a command that asks for one is aborted (Ctrl-C) and reported, so the next command is never typed into a password field. To get the full set of checks, give the account a `NOPASSWD` sudoers rule or use the built-in `cumulus` user.
 
+## Security notes
+
+- Secrets are masked wherever text leaves the session: logs, backups' shared copies, bundles, the audit trail and AI requests. The masks cover `password`/`secret` in every Cisco, NX-OS, EOS, AOS-S, NVUE and Junos spelling, RADIUS/TACACS+ keys on `-server host` lines, OSPF/EIGRP authentication keys, SNMP communities (including `snmp-server host` and Junos `set snmp community`), pre-shared keys, `failover key` and `config-key password-encrypt`.
+- A command is only *read-only* if it stays on the device: `| redirect`, `| tee`, `| export`, a URL, or shell chaining (`;`, `&&`, `>`, `$(…)`, `| sudo`) make it a configuration change that needs the full review.
+- Imported device lists never carry a credential-profile binding; bind a profile after looking at the device. SCP paths are plain paths (no quotes or shell characters); SFTP handles the rest. Cloud AI providers must use https; plain http is allowed only for local providers. RDP through xfreerdp trusts a certificate on first use instead of ignoring it.
+
 ## Cisco ISE
 
 ISE's ADE-OS CLI has no `terminal length`, so every ISE probe carries `| nomore`; logs come from `show logging system messages tail count N`. A probe that ISE answers with `syntax error` is reported as rejected rather than parsed as output.

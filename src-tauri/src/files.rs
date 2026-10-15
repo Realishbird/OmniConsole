@@ -262,7 +262,17 @@ async fn copy_with_progress<R: tokio::io::AsyncRead + Unpin, W: tokio::io::Async
 /* ------------------------------------------------------------------ scp */
 
 /// Minimal SCP source protocol: `scp -f path` on the device.
+/// SCP runs through the device's shell, so the path must be a plain path.
+fn scp_path(remote: &str) -> Result<&str> {
+    let r = remote.trim();
+    if r.is_empty() || r.starts_with('-') || r.chars().any(|c| c.is_whitespace() || "|;&$`()<>'\"\\".contains(c) || c.is_control()) {
+        anyhow::bail!("the remote path contains characters SCP cannot carry safely (spaces, quotes, ; | & $ ` ( ) < >): use SFTP or rename the file");
+    }
+    Ok(r)
+}
+
 async fn scp_download<W: tokio::io::AsyncWrite + Unpin>(ssh: &Connected, remote: &str, out: &mut W, events: &Channel<Transfer>) -> Result<u64> {
+    let remote = scp_path(remote)?;
     let mut ch = ssh.session.channel_open_session().await?;
     ch.exec(true, format!("scp -f {remote}")).await?;
     ch.data(&b"\0"[..]).await?;
@@ -338,6 +348,7 @@ async fn wait_ack(ch: &mut russh::Channel<russh::client::Msg>) -> Result<()> {
 
 /// Minimal SCP sink protocol: `scp -t path` on the device.
 async fn scp_upload<R: tokio::io::AsyncRead + Unpin>(ssh: &Connected, remote: &str, name: &str, input: &mut R, total: u64, events: &Channel<Transfer>) -> Result<()> {
+    let remote = scp_path(remote)?;
     let mut ch = ssh.session.channel_open_session().await?;
     ch.exec(true, format!("scp -t {remote}")).await?;
     wait_ack(&mut ch).await.context("SCP start")?;

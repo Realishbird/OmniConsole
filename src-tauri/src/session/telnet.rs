@@ -98,7 +98,7 @@ impl Telnet {
                     if b == IAC {
                         State::SubIac
                     } else {
-                        self.sub.push(b);
+                        if self.sub.len() < 1024 { self.sub.push(b); }
                         State::Sub
                     }
                 }
@@ -112,7 +112,7 @@ impl Telnet {
                         }
                         State::Data
                     } else {
-                        self.sub.push(b);
+                        if self.sub.len() < 1024 { self.sub.push(b); }
                         State::Sub
                     }
                 }

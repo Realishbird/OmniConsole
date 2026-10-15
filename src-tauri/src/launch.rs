@@ -30,8 +30,8 @@ pub fn launch_external(protocol: String, host: String, port: u16, username: Stri
         ("rdp", "macos") => ("open", vec![format!("rdp://full%20address=s:{host}:{}{}", if port == 0 { 3389 } else { port }, if user.is_empty() { String::new() } else { format!("&username=s:{user}") })]),
         ("rdp", _) => {
             let p = if port == 0 { 3389 } else { port };
-            if which("xfreerdp") { ("xfreerdp", { let mut a = vec![format!("/v:{host}:{p}"), "/cert:ignore".into(), "/dynamic-resolution".into()]; if !user.is_empty() { a.push(format!("/u:{user}")); } a }) }
-            else if which("xfreerdp3") { ("xfreerdp3", { let mut a = vec![format!("/v:{host}:{p}"), "/cert:ignore".into(), "/dynamic-resolution".into()]; if !user.is_empty() { a.push(format!("/u:{user}")); } a }) }
+            if which("xfreerdp") { ("xfreerdp", { let mut a = vec![format!("/v:{host}:{p}"), "/cert:tofu".into(), "/dynamic-resolution".into()]; if !user.is_empty() { a.push(format!("/u:{user}")); } a }) }
+            else if which("xfreerdp3") { ("xfreerdp3", { let mut a = vec![format!("/v:{host}:{p}"), "/cert:tofu".into(), "/dynamic-resolution".into()]; if !user.is_empty() { a.push(format!("/u:{user}")); } a }) }
             else if which("remmina") { ("remmina", vec!["-c".into(), format!("rdp://{}{host}:{p}", if user.is_empty() { String::new() } else { format!("{user}@") })]) }
             else { return Err("no RDP client found: install freerdp (xfreerdp) or remmina".into()); }
         }

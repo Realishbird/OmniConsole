@@ -222,7 +222,7 @@ pub async fn deploy_run(
         let ok = step("send", command, out.clone(), &mut report);
         if !ok {
             report.failed = true;
-            report.error = format!("`{command}` was rejected: {}", out.unwrap_or_else(|e| e).lines().find(|l| l.trim_start().starts_with('%') || l.contains("rror") || l.contains("syntax") || l.contains("unknown")).unwrap_or("see the output").trim());
+            report.error = crate::redact::text(&format!("`{command}` was rejected: {}", out.unwrap_or_else(|e| e).lines().find(|l| l.trim_start().starts_with('%') || l.contains("rror") || l.contains("syntax") || l.contains("unknown")).unwrap_or("see the output").trim()));
             break;
         }
         report.sent += 1;
@@ -241,7 +241,7 @@ pub async fn deploy_run(
             let out = sessions.run_command_with(&id, command, Duration::from_secs(300), YES).await.map_err(err);
             if !step("commit", command, out.clone(), &mut report) {
                 report.failed = true;
-                report.error = format!("`{command}` failed: {}", out.unwrap_or_else(|e| e).lines().find(|l| l.contains("rror") || l.contains("fail")).unwrap_or("see the output").trim());
+                report.error = crate::redact::text(&format!("`{command}` failed: {}", out.unwrap_or_else(|e| e).lines().find(|l| l.contains("rror") || l.contains("fail")).unwrap_or("see the output").trim()));
                 break;
             }
             if command.contains("confirmed") || command.contains("timer") {

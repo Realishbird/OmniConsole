@@ -251,6 +251,8 @@ impl Runner<'_> {
                 }
             }
             if tokio::time::Instant::now() > deadline {
+                // stop whatever is still running (a ping, a debug) so it does not bleed into the next command
+                (self.send)(vec![0x03]);
                 break Err(anyhow!("no prompt after {} s running `{}`", timeout.as_secs(), command));
             }
             let _ = tokio::time::timeout(Duration::from_millis(250), self.capture.changed.notified()).await;

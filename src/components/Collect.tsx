@@ -28,6 +28,11 @@ interface State {
   error: string | null;
 }
 
+/** The device did not know the command: an older IOS without `show module`, a profile command the platform lacks. */
+function rejected(err: string): boolean {
+  return /rejected|syntax error|invalid input|unknown command|not found|incomplete command/i.test(err);
+}
+
 /** Quick actions per platform: the read-only command sets of the profile, run and kept per tab. */
 export default function Collect({ sessionId, tabKey, facts, onFacts, deviceName, site, maskSecrets, onToast, onSend, onAsk }: Props) {
   const [st, update] = useTabState<State>("collect", tabKey, () => ({ os: null, running: null, progress: null, results: {}, open: null, error: null }));
@@ -73,8 +78,9 @@ export default function Collect({ sessionId, tabKey, facts, onFacts, deviceName,
         if (e.type === "command") update({ progress: { command: e.command, index: e.index, total: e.total } });
       });
       update({ results: { ...st.results, [c.id]: r }, running: null, progress: null });
-      const failed = r.outputs.filter(([, o]) => "Err" in o).length;
-      onToast(failed ? `${c.title}: ${failed} of ${r.outputs.length} commands failed` : `${c.title}: ${r.outputs.length} commands collected`);
+      const failed = r.outputs.filter(([, o]) => "Err" in o && !rejected(o.Err)).length;
+      const unsupported = r.outputs.filter(([, o]) => "Err" in o && rejected(o.Err)).length;
+      onToast(failed ? `${c.title}: ${failed} of ${r.outputs.length} commands failed` : unsupported ? `${c.title}: ${r.outputs.length - unsupported} commands collected, ${unsupported} not supported here` : `${c.title}: ${r.outputs.length} commands collected`);
     } catch (e) {
       update({ running: null, progress: null, error: String(e) });
     }
@@ -129,13 +135,14 @@ export default function Collect({ sessionId, tabKey, facts, onFacts, deviceName,
           {list.map((c) => {
             const r = st.results[c.id];
             const isOpen = st.open === c.id;
-            const failed = r ? r.outputs.filter(([, o]) => "Err" in o).length : 0;
+            const failed = r ? r.outputs.filter(([, o]) => "Err" in o && !rejected(o.Err)).length : 0;
+            const unsupported = r ? r.outputs.filter(([, o]) => "Err" in o && rejected(o.Err)).length : 0;
             return (
               <div key={c.id} className={`check-row${isOpen ? " open" : ""}${c.commands.length ? "" : " not-applicable"}`}>
                 <button className="check-head" onClick={() => update({ open: isOpen ? null : c.id })}>
                   <span className={`status-dot ${r ? (failed ? "warning" : "healthy") : c.commands.length ? "" : "not-applicable"}`} />
                   <span className="check-title">{c.title}</span>
-                  <span className="check-summary">{r ? `${r.outputs.length} commands · ${stamp(r.finished)}${failed ? ` · ${failed} failed` : ""}` : c.commands.length ? c.commands.join(" · ") : c.note}</span>
+                  <span className="check-summary">{r ? `${r.outputs.length - failed - unsupported} of ${r.outputs.length} commands collected · ${stamp(r.finished)}${failed ? ` · ${failed} failed` : ""}${unsupported ? ` · ${unsupported} not on this device` : ""}` : c.commands.length ? c.commands.join(" · ") : c.note}</span>
                 </button>
                 {isOpen && (
                   <div className="check-detail">
@@ -156,10 +163,10 @@ export default function Collect({ sessionId, tabKey, facts, onFacts, deviceName,
                           <button className="icon-btn" title="Save as a text file" onClick={() => void save(r)}><SaveIcon /></button>
                           <button className="icon-btn" title="Keep as a timestamped capture next to this device's config backups (Tools → Configs)" onClick={() => void capture(r)}><FolderIcon /></button>
                         </div>
-                        {r.outputs.map(([cmd, o]) => (
-                          <details key={cmd} className="raw" open={"Err" in o}>
-                            <summary>{cmd}{"Err" in o ? " · failed" : ""}</summary>
-                            <pre className={"Err" in o ? "rejected" : ""}>{"Ok" in o ? o.Ok || "(no output)" : o.Err}</pre>
+                        {r.outputs.map(([cmd, o], i) => (
+                          <details key={cmd} className="raw" open={("Err" in o && !rejected(o.Err)) || i === 0}>
+                            <summary>{cmd}{"Err" in o ? (rejected(o.Err) ? " · not supported on this device" : " · failed") : ` · ${("Ok" in o ? o.Ok : "").split("\n").length} lines`}</summary>
+                            <pre className={"Err" in o ? (rejected(o.Err) ? "quiet" : "rejected") : ""}>{"Ok" in o ? o.Ok || "(no output)" : o.Err}</pre>
                           </details>
                         ))}
                       </>

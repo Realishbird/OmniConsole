@@ -62,6 +62,11 @@ const DISRUPTIVE: &[(&str, &str)] = &[
     ("config-register", "changes the config register"),
 ];
 
+fn re_writes() -> &'static regex::Regex {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| regex::Regex::new(r"\|\s*(?:redirect|tee|append|export|save)\b|[a-z]+://|[;&`]|\|\||\$\(|(?:^|[^|])>|\|\s*sudo\b").unwrap())
+}
+
 fn starts(cmd: &str, word: &str) -> bool {
     cmd == word || cmd.starts_with(&format!("{word} ")) || (word.ends_with(' ') && cmd.starts_with(word))
 }
@@ -79,7 +84,12 @@ pub fn classify(commands: &[String]) -> Vec<Classified> {
         }
         let lower = command.to_lowercase();
         let lower = lower.trim_start_matches("do ").to_string();
-        let (kind, reason) = if let Some((_, why)) = DISRUPTIVE.iter().find(|(w, _)| starts(&lower, w) || (w.ends_with(' ') && lower.contains(w) && !lower.starts_with("show"))) {
+        let writes_elsewhere = re_writes().is_match(&lower);
+        let (kind, reason) = if writes_elsewhere {
+            // "show run | redirect tftp://x", "show tech | tee", "ls; sudo reboot", "cat x > y": the
+            // first word reads, the rest copies data off the box or runs something else
+            (Kind::Config, "sends output elsewhere or chains another command".into())
+        } else if let Some((_, why)) = DISRUPTIVE.iter().find(|(w, _)| starts(&lower, w) || (w.ends_with(' ') && lower.contains(w) && !lower.starts_with("show"))) {
             // "shutdown" inside an interface is config, but still disruptive to that port
             (Kind::Disruptive, why.to_string())
         } else if lower == "end" || lower == "exit" && in_config {
@@ -118,6 +128,14 @@ mod tests {
 
     fn kinds(cmds: &[&str]) -> Vec<Kind> {
         classify(&cmds.iter().map(|s| s.to_string()).collect::<Vec<_>>()).iter().map(|c| c.kind).collect()
+    }
+
+    #[test]
+    fn output_sent_elsewhere_is_not_read_only() {
+        for c in ["show running-config | redirect tftp://10.0.0.9/run.txt", "show tech | tee flash:tech.txt", "ls; sudo reboot", "cat /etc/frr/frr.conf > /tmp/x", "show version && reload", "echo $(id)", "show ip route | sudo tee /tmp/r"] {
+            assert_eq!(kinds(&[c]), vec![Kind::Config], "{c}");
+        }
+        assert_eq!(kinds(&["show ip interface brief | include up", "show run | section ospf", "show log | last 50"]), vec![Kind::ReadOnly; 3]);
     }
 
     #[test]
