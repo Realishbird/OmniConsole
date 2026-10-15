@@ -13,6 +13,7 @@ use crate::cisco::configs;
 use crate::cisco::detect::{self, Os};
 use crate::cisco::firmware::{self, FirmwareInfo, Plan};
 use crate::cisco::templates::{self, FieldError, Rendered, Template};
+use crate::platforms;
 use crate::session::runner::{Answers, YesNo};
 use crate::session::SessionManager;
 
@@ -87,9 +88,16 @@ pub struct DeployReport {
     pub started: i64,
     pub finished: i64,
     pub backup: Option<String>,
-    /// how to undo, when the platform offers it
+    /// how to undo, when the platform offers it (several lines = run in order)
     pub rollback_command: Option<String>,
+    /// a `reload in N` (Cisco) or an unconfirmed commit is pending on the device
     pub safety_reload: bool,
+    /// what is pending and how `deploy_finish` settles it, for the UI
+    #[serde(default)]
+    pub pending: String,
+    /// the platform's save step, empty when a commit is already persistent
+    #[serde(default)]
+    pub save_command: String,
     pub steps: Vec<DeployStep>,
     pub sent: usize,
     pub failed: bool,
@@ -100,6 +108,7 @@ fn looks_like_error(output: &str) -> bool {
     output.lines().any(|l| {
         let t = l.trim_start();
         t.starts_with("% ") || t.starts_with("%Error") || t.starts_with("ERROR:") || t.starts_with("Error:") || t.contains("Invalid command")
+            || t.starts_with("Invalid input") || t.starts_with("syntax error") || t.starts_with("error:") || t.starts_with("unknown command") || t.contains("Error: ")
     })
 }
 
@@ -117,9 +126,16 @@ pub async fn deploy_run(
     events: Channel<DeployEvent>,
 ) -> CmdResult<DeployReport> {
     let os = os.unwrap_or(Os::Ios);
+    let profile = platforms::profile(os);
+    let wf = &profile.workflow;
+    let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string();
+    let name = format!("omni-{stamp}");
+    let minutes = options.safety_reload_minutes.clamp(1, 240);
     let started = chrono::Utc::now().timestamp();
-    let mut report = DeployReport { started, finished: started, backup: None, rollback_command: None, safety_reload: false, steps: Vec::new(), sent: 0, failed: false, error: String::new() };
-    let total = commands.len();
+    let mut report = DeployReport {
+        started, finished: started, backup: None, rollback_command: None, safety_reload: false, pending: String::new(),
+        save_command: wf.save.join("\n"), steps: Vec::new(), sent: 0, failed: false, error: String::new(),
+    };
 
     let step = |phase: &str, command: &str, output: Result<String, String>, report: &mut DeployReport| -> bool {
         let (text, ok) = match output {
@@ -138,49 +154,93 @@ pub async fn deploy_run(
         let _ = sessions.run_command(&id, cmd, Duration::from_secs(15)).await;
     }
 
+    // the lines to send, wrapped in the platform's configuration mode unless they already are
+    let already_wrapped = commands.first().map(|c| wf.enter.iter().any(|e| platforms::fill(e, &name, minutes).split_whitespace().next() == c.split_whitespace().next()) || c.trim_start().starts_with("configure") || c.trim_start().starts_with("nv set") || c.trim_start().starts_with("nv unset")).unwrap_or(false);
+    let mut lines: Vec<String> = Vec::new();
+    if !already_wrapped {
+        lines.extend(wf.enter.iter().map(|e| platforms::fill(e, &name, minutes)));
+    }
+    lines.extend(commands.iter().cloned());
+    if !already_wrapped {
+        lines.extend(wf.exit.iter().cloned());
+    }
+    // candidate platforms: the commit makes it live; a timed commit reverts unless confirmed
+    let mut commit: Vec<String> = Vec::new();
+    if wf.candidate {
+        if options.safety_reload_minutes > 0 && !wf.commit_confirmed.is_empty() {
+            commit.push(platforms::fill(&wf.commit_confirmed, &name, minutes));
+        } else {
+            commit.extend(wf.commit.iter().map(|c| platforms::fill(c, &name, minutes)));
+        }
+    }
+    let total = lines.len() + commit.len();
+
     if options.backup {
-        let _ = events.send(DeployEvent::Step { phase: "backup".into(), command: "show running-config".into(), index: 0, total });
-        let text = sessions.run_command(&id, "show running-config", Duration::from_secs(300)).await.map_err(err)?;
+        let kind = profile.configs.first().cloned().unwrap_or(platforms::ConfigKind { kind: "running".into(), label: "Running configuration".into(), command: wf.restorable.clone() });
+        let _ = events.send(DeployEvent::Step { phase: "backup".into(), command: kind.command.clone(), index: 0, total });
+        let text = sessions.run_command(&id, &kind.command, Duration::from_secs(300)).await.map_err(err)?;
         let root = crate::tools::config_root_pub(&app);
-        let b = configs::save(&root, &site, &device, "running", &text).map_err(err)?;
+        let b = configs::save(&root, &site, &device, &kind.kind, &text).map_err(err)?;
         report.backup = Some(b.path.clone());
-        step("backup", "show running-config", Ok(format!("saved to {}", b.path)), &mut report);
+        step("backup", &kind.command, Ok(format!("saved to {}", b.path)), &mut report);
     }
 
     if options.rollback_point {
-        let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
-        let (cmd, undo): (String, String) = match os {
-            Os::NxOs => (format!("checkpoint omni-{stamp}"), format!("rollback running-config checkpoint omni-{stamp}")),
-            Os::Asa | Os::SmallBusiness | Os::CatOs | Os::Unknown => (String::new(), String::new()),
-            _ => (format!("copy running-config flash:omni-{stamp}.cfg"), format!("configure replace flash:omni-{stamp}.cfg force")),
-        };
-        if !cmd.is_empty() {
+        if !wf.checkpoint.is_empty() {
+            let cmd = platforms::fill(&wf.checkpoint, &name, minutes);
             let _ = events.send(DeployEvent::Step { phase: "rollback".into(), command: cmd.clone(), index: 0, total });
             let out = sessions.run_command_with(&id, &cmd, Duration::from_secs(120), YES).await.map_err(err);
             if step("rollback", &cmd, out, &mut report) {
-                report.rollback_command = Some(undo);
+                report.rollback_command = Some(platforms::fill(&wf.rollback, &name, minutes));
             }
+        } else if !wf.rollback.is_empty() {
+            // Junos / IOS-XR / NVUE keep history on their own: undo = roll back, then commit
+            let mut undo = vec![platforms::fill(&wf.rollback, &name, minutes)];
+            if wf.candidate && !wf.commit.is_empty() && !wf.rollback.starts_with("nv ") {
+                undo.extend(wf.commit.iter().map(|c| platforms::fill(c, &name, minutes)));
+            }
+            report.rollback_command = Some(undo.join("\n"));
+            step("rollback", &undo.join(" ; "), Ok(format!("{} keeps the previous configuration; this undoes the change", profile.label)), &mut report);
         }
     }
 
     if options.safety_reload_minutes > 0 && matches!(os, Os::Ios | Os::IosXe) {
-        let cmd = format!("reload in {}", options.safety_reload_minutes.clamp(1, 240));
+        let cmd = format!("reload in {minutes}");
         let _ = events.send(DeployEvent::Step { phase: "safety".into(), command: cmd.clone(), index: 0, total });
         // "Save? [yes/no]" must be answered no: nothing has changed yet
         let out = sessions.run_command_with(&id, &cmd, Duration::from_secs(30), NO).await.map_err(err);
         report.safety_reload = step("safety", &cmd, out, &mut report);
+        if report.safety_reload {
+            report.pending = format!("reload in {minutes} minutes unless cancelled");
+        }
     }
 
-    for (i, command) in commands.iter().enumerate() {
+    for (i, command) in lines.iter().enumerate() {
         let _ = events.send(DeployEvent::Step { phase: "send".into(), command: command.clone(), index: i, total });
         let out = sessions.run_command_with(&id, command, Duration::from_secs(120), YES).await.map_err(err);
         let ok = step("send", command, out.clone(), &mut report);
         if !ok {
             report.failed = true;
-            report.error = format!("`{command}` was rejected: {}", out.unwrap_or_else(|e| e).lines().find(|l| l.trim_start().starts_with('%') || l.contains("rror")).unwrap_or("see the output").trim());
+            report.error = format!("`{command}` was rejected: {}", out.unwrap_or_else(|e| e).lines().find(|l| l.trim_start().starts_with('%') || l.contains("rror") || l.contains("syntax") || l.contains("unknown")).unwrap_or("see the output").trim());
             break;
         }
         report.sent += 1;
+    }
+
+    if !report.failed {
+        for (i, command) in commit.iter().enumerate() {
+            let _ = events.send(DeployEvent::Step { phase: "commit".into(), command: command.clone(), index: lines.len() + i, total });
+            let out = sessions.run_command_with(&id, command, Duration::from_secs(300), YES).await.map_err(err);
+            if !step("commit", command, out.clone(), &mut report) {
+                report.failed = true;
+                report.error = format!("`{command}` failed: {}", out.unwrap_or_else(|e| e).lines().find(|l| l.contains("rror") || l.contains("fail")).unwrap_or("see the output").trim());
+                break;
+            }
+            if command.contains("confirmed") || command.contains("timer") {
+                report.safety_reload = true;
+                report.pending = format!("the commit reverts on its own in {minutes} minutes unless confirmed");
+            }
+        }
     }
 
     if !report.failed {
@@ -194,31 +254,59 @@ pub async fn deploy_run(
     Ok(report)
 }
 
-/// After a deployment: cancel the safety reload and/or save.
+/// After a deployment: cancel the safety reload or confirm the timed commit, and/or save.
 #[tauri::command]
 pub async fn deploy_finish(sessions: State<'_, SessionManager>, id: String, os: Option<Os>, cancel_reload: bool, save: bool) -> CmdResult<Vec<DeployStep>> {
     let os = os.unwrap_or(Os::Ios);
+    let wf = platforms::profile(os).workflow;
     let mut steps = Vec::new();
     if cancel_reload {
-        let out = sessions.run_command_with(&id, "reload cancel", Duration::from_secs(30), YES).await;
-        steps.push(DeployStep { phase: "finish".into(), command: "reload cancel".into(), output: out.as_ref().map(|s| s.clone()).unwrap_or_else(|e| format!("{e:#}")), ok: out.is_ok() });
+        if matches!(os, Os::Ios | Os::IosXe) {
+            steps.push(finish_step(&sessions, &id, "reload cancel").await);
+        } else if wf.candidate && save {
+            // confirming the timed commit keeps the change
+            for c in &wf.confirm {
+                steps.push(finish_step(&sessions, &id, c).await);
+            }
+        }
+        // a candidate platform's timed commit that is not confirmed reverts by itself
     }
     if save {
-        let cmd = match os { Os::NxOs => "copy running-config startup-config", Os::Asa => "write memory", _ => "write memory" };
-        let out = sessions.run_command_with(&id, cmd, Duration::from_secs(120), YES).await;
-        steps.push(DeployStep { phase: "finish".into(), command: cmd.into(), output: out.as_ref().map(|s| s.clone()).unwrap_or_else(|e| format!("{e:#}")), ok: out.is_ok() });
+        for c in &wf.save {
+            steps.push(finish_step(&sessions, &id, c).await);
+        }
     }
     Ok(steps)
 }
 
-/// Run the platform's rollback command from a deployment report.
+async fn finish_step(sessions: &SessionManager, id: &str, cmd: &str) -> DeployStep {
+    let out = sessions.run_command_with(id, cmd, Duration::from_secs(120), YES).await;
+    DeployStep { phase: "finish".into(), command: cmd.into(), output: out.as_ref().map(|s| s.clone()).unwrap_or_else(|e| format!("{e:#}")), ok: out.as_ref().is_ok_and(|o| !looks_like_error(o)) }
+}
+
+/// Run the platform's rollback command(s) from a deployment report.
 #[tauri::command]
-pub async fn deploy_rollback(sessions: State<'_, SessionManager>, id: String, command: String) -> CmdResult<DeployStep> {
-    if !(command.starts_with("configure replace ") || command.starts_with("rollback running-config checkpoint ")) {
-        return Err("not a rollback command".into());
+pub async fn deploy_rollback(sessions: State<'_, SessionManager>, id: String, os: Option<Os>, command: String) -> CmdResult<DeployStep> {
+    let wf = platforms::profile(os.unwrap_or(Os::Ios)).workflow;
+    let allowed = |c: &str| {
+        let head = |t: &str| t.split('{').next().unwrap_or("").trim().to_string();
+        (!wf.rollback.is_empty() && c.starts_with(head(&wf.rollback).as_str())) || wf.commit.iter().any(|k| c == platforms::fill(k, "", 0).trim() || c.starts_with(head(k).as_str()))
+    };
+    let mut output = String::new();
+    let mut ok = true;
+    for c in command.lines().map(str::trim).filter(|c| !c.is_empty()) {
+        if !allowed(c) {
+            return Err(format!("`{c}` is not this platform's rollback command"));
+        }
+        let out = sessions.run_command_with(&id, c, Duration::from_secs(300), YES).await;
+        let text = out.as_ref().map(|s| s.clone()).unwrap_or_else(|e| format!("{e:#}"));
+        ok &= out.as_ref().is_ok_and(|o| !looks_like_error(o));
+        output.push_str(&format!("{c}\n{text}\n"));
+        if !ok {
+            break;
+        }
     }
-    let out = sessions.run_command_with(&id, &command, Duration::from_secs(300), YES).await;
-    Ok(DeployStep { phase: "rollback".into(), command, output: out.as_ref().map(|s| s.clone()).unwrap_or_else(|e| format!("{e:#}")), ok: out.as_ref().is_ok_and(|o| !looks_like_error(o)) })
+    Ok(DeployStep { phase: "rollback".into(), command, output, ok })
 }
 
 /*

@@ -52,11 +52,18 @@ Passwords and key passphrases go in the operating system's credential store (Win
 - Favorites, recents, import (OmniConsole JSON or CSV), export (never includes passwords).
 - Production, staging, lab and customer environments color the tab and the status bar, which also shows the protocol, the host name from the prompt and the privilege level.
 
+### Platforms
+- Detects the platform from `show version` (and a shell probe for Linux-based switches): Cisco IOS, IOS-XE, NX-OS, IOS-XR, ASA, Small Business SG/CBS, CatOS, **Aruba AOS-S**, **Aruba AOS-CX**, **Juniper Junos**, **Arista EOS**, **SONiC (Cisco S1)** and **NVIDIA Cumulus Linux** (NVUE, with NCLU and Linux/FRR fallbacks). Each has its own command definitions, parsers, pagination, privilege and configuration workflow; AOS-S and AOS-CX are kept apart.
+- When detection is inconclusive, pick the platform by hand in Checks or Collect; the choice sticks for that tab.
+
 ### Health checks (Tools → Checks)
-- Detects the platform from `show version` (IOS, IOS-XE, NX-OS, IOS-XR, ASA, Small Business SG/CBS, CatOS) and runs the right read-only commands with paging off.
-- 20 checks graded pass / warning / fail / unknown, each with the output lines behind the verdict and the follow-up commands: system and uptime, CPU, memory, temperature, power, fans, stack, redundancy, interface errors, speed/duplex/err-disabled, PoE, VLANs and trunks, port channels, spanning tree, routing neighbors, recent logs, CDP/LLDP neighbors, IP interfaces, MAC and ARP tables.
-- Parsed tables with a filter, a choice of which checks run, repeat every 5/15/60 minutes, cancel at any time.
-- Save a run as a baseline and compare later runs; save a diagnostic bundle (zip of summary, facts, results and raw output) with secrets masked.
+- **Quick** (system, CPU, memory, temperature, power, fans, stack, redundancy, interface errors, logs, time sync, storage, uplinks), **Detailed** (everything the platform supports, 25 checks: plus speed/duplex, PoE, VLANs, port channels, spanning tree, routing neighbors, CDP/LLDP, IP interfaces, MAC and ARP tables, optics, VXLAN/EVPN) and **Pre-change / Post-change**: keep a run as the snapshot, run again after the change and see every status that moved.
+- Every result has a status, the output lines behind it, the collection time, a next step and the follow-up commands. Statuses: **Healthy, Warning, Critical, Not applicable, Unsupported, Not collected**. A command that failed or output that could not be read is Not collected, never healthy.
+- Finds cabling loops: a port in the spanning-tree Backup role means the switch hears its own BPDUs, so the check goes critical and names both ports; many topology changes with a recent one, or two ports changing state at the same timestamps in the log, are called out too.
+- Parsed tables with a filter, a choice of which checks run, repeat every 5/15/60 minutes, cancel at any time; save a run as a baseline and compare later runs; save a diagnostic bundle (zip of summary, facts, results and raw output) with secrets masked.
+
+### Collect (Tools → Collect)
+Per-platform quick actions: system and inventory, configuration (running, startup, committed, checkpoints), interfaces/counters/errors/optics/PoE, VLANs/trunks/STP/LACP, LLDP/CDP, routing/VRF/OSPF/BGP, stack/VC/VSF/VSX/MLAG, VXLAN/EVPN, logs and environment. Troubleshooting sets for the same areas. Each runs read-only, keeps its output per tab, saves to a text file or goes to the assistant. The **Change workflow** tab shows how this platform enters configuration, commits (Junos `commit confirmed`, EOS sessions, NVUE apply), saves, checkpoints and rolls back.
 
 ### Config backups (Tools → Configs)
 - Running and startup config to `Documents/OmniConsole/Configs/<site>/<device>/<timestamp>_running.cfg`.
@@ -65,9 +72,9 @@ Passwords and key passphrases go in the operating system's credential store (Win
 
 ### Assistant (Tools → Assistant, `Ctrl/Cmd+Shift+A`)
 - Providers: Ollama or LM Studio on this computer (Qwen3 8B suggested), OpenAI, Anthropic, or any OpenAI-compatible endpoint. API keys live in the keychain.
-- Explain selected output, suggest next steps from the latest health check, interpret diagnostics, generate configuration, all tailored to the detected OS and version. Answers separate what the output shows from what the model infers.
+- Explain selected output, suggest next steps from the latest health check, interpret diagnostics, generate configuration. The detected vendor, model, OS and version are pinned into every request with platform notes (no quoted `| include` patterns on IOS, `show env all` on classic IOS, no interface ranges in show commands), and the latest health check results are included, so the model does not re-collect what the app already knows. Answers separate what the output shows from what the model infers.
 - Proposed commands appear as cards classified **read-only**, **configuration change** or **disruptive**. Read-only cards run on approval; changes need a review checkbox and a second confirmation, take a backup first and write an audit entry; disruptive lines need the device name typed; production devices stay locked until unlocked for that tab.
-- After a card runs, the assistant reads the result on its own: a rejected command comes back corrected, good output is interpreted, up to three rounds.
+- After a card runs, the assistant reads the result on its own: all the output that came back is interpreted, a rejected command gets one corrected replacement, and nothing that already ran is proposed again; up to three rounds. Commands the model gets wrong on the platform are corrected before they reach the card (quoted filters, bare `show memory`, interface ranges). Older proposals are marked superseded when a newer one arrives.
 - Secrets are replaced with `<removed>` before anything leaves the app. Sharing of output, configuration text and device names can each be turned off.
 
 ### Guided troubleshooting (Tools → Workflows)
@@ -75,7 +82,7 @@ Step-by-step read-only workflows: trace a device by IP or MAC to its port and th
 
 ### Deploy (Tools → Deploy)
 - **Templates** with typed, validated variables, rendered for IOS or NX-OS: access, access point, camera, voice, trunk, uplink and port-channel ports, VLAN with SVI, and initial setup of a new switch (hostname, management SVI and VRF, gateway, DNS, NTP, SSH, local admin, logging, SNMPv3, banner).
-- **Reviewed deployment**: the exact lines, a running-config backup, a rollback point on the device (`copy running-config flash:` with `configure replace`, or an NX-OS checkpoint), an optional `reload in N` safety net, line-by-line sending with progress that stops at the first rejected line, verify commands, then save, roll back or cancel the reload.
+- **Reviewed deployment**: the exact lines, a config backup, a rollback point on the device (IOS `copy running-config flash:` with `configure replace`, NX-OS and AOS-CX checkpoints, EOS saved checkpoints; Junos, IOS-XR and NVUE use their own history), an optional `reload in N` safety net on IOS or a timed `commit confirmed` / session `commit timer` on candidate platforms, line-by-line sending wrapped in the platform's configuration mode that stops at the first rejected line, the commit where one is needed, verify commands, then save or confirm, roll back, or let it revert.
 - **Firmware assistant**: reads version, image, boot variable, free flash and stack members, checks the new image's family, space and checksum, and proposes transfer, MD5 verification, activation (`boot system`, `install add … activate commit`, or NX-OS `install all`) and post-upgrade validation as separate reviewed steps. The reload is always explicit.
 - **Checklists** for installation, cutover and upgrade, with a result and note per item, saved per device and exportable.
 - **Audit** of every configuration change sent: lines, result, backup path.
@@ -133,7 +140,7 @@ cd src-tauri && cargo test   # backend tests (parsers, checks, templates, SCP/SF
 
 ## How it is built
 
-- **Backend**: Rust with Tauri 2. `session/` holds the SSH (russh), Telnet and serial (serialport) sessions plus the capture-based command runner; `cisco/` the OS detection, parsers, 20 checks, config diffing, command classification, templates and firmware planning; `ai.rs` the providers; `deploy.rs` the reviewed deployment; `files.rs` SFTP and SCP; `nettools.rs` the workstation tools; `store.rs` devices and the keyring.
+- **Backend**: Rust with Tauri 2. `session/` holds the SSH (russh), Telnet and serial (serialport) sessions plus the capture-based command runner; `cisco/` the OS detection, parsers, 25 checks (`checks.rs` for Cisco, `generic.rs` for the other vendors), config diffing, command classification, templates and firmware planning; `ai.rs` the providers; `platforms.rs` the per-platform profiles (collections, troubleshooting sets, change workflows); `deploy.rs` the reviewed deployment; `files.rs` SFTP and SCP; `nettools.rs` the workstation tools; `store.rs` devices and the keyring.
 - **Frontend**: React, TypeScript and xterm.js. `App.tsx` owns tabs, panes and shortcuts; `components/ToolsPanel.tsx` the tools sections, each keeping state per console tab.
 - **CI**: `.github/workflows/build.yml` builds all six platforms and runs the backend tests.
 

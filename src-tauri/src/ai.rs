@@ -112,7 +112,7 @@ fn redacted(messages: &[ChatMessage]) -> (Vec<ChatMessage>, usize) {
         .iter()
         .map(|m| {
             let content = redact::text(&m.content);
-            count += content.matches(redact::MASK).count();
+            count += content.matches(redact::MASK).count().saturating_sub(m.content.matches(redact::MASK).count());
             ChatMessage { role: m.role.clone(), content }
         })
         .collect();

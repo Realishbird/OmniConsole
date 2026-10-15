@@ -746,6 +746,7 @@ export default function App() {
     action("sidebar", sidebarOpen ? "Hide devices" : "Show devices", () => setSidebarOpen((v) => !v), `${mod}+Shift+B`);
     action("tools", toolsOpen ? "Hide tools" : "Show tools (health checks, configs)", () => setToolsOpen((v) => !v), `${mod}+Shift+I`);
     action("checks", "Run health checks", () => { setToolsSection("checks"); setToolsOpen(true); });
+    action("collect", "Collect: platform quick actions and troubleshooting sets", () => { setToolsSection("collect"); setToolsOpen(true); });
     action("backup", "Back up running config", () => { setToolsSection("configs"); setToolsOpen(true); });
     action("assistant", "Ask the assistant", () => { setToolsSection("assistant"); setToolsOpen(true); }, `${mod}+Shift+A`);
     action("explain", "Explain selected output", () => { setToolsSection("assistant"); setToolsOpen(true); }, undefined, !!active?.session.selection());

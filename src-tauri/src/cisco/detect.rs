@@ -15,6 +15,17 @@ pub enum Os {
     /// Small Business SG/CBS/SF switches
     SmallBusiness,
     CatOs,
+    /// Aruba / HPE ProCurve switches (ArubaOS-Switch)
+    ArubaOsS,
+    /// Aruba CX
+    ArubaCx,
+    Junos,
+    /// Arista EOS
+    Eos,
+    /// SONiC (Cisco S1 distribution and community)
+    Sonic,
+    /// NVIDIA Cumulus Linux
+    Cumulus,
     Unknown,
 }
 
@@ -28,8 +39,27 @@ impl Os {
             Os::Asa => "Cisco ASA",
             Os::SmallBusiness => "Cisco Small Business (SG/CBS)",
             Os::CatOs => "Cisco CatOS",
+            Os::ArubaOsS => "Aruba AOS-S",
+            Os::ArubaCx => "Aruba AOS-CX",
+            Os::Junos => "Juniper Junos",
+            Os::Eos => "Arista EOS",
+            Os::Sonic => "SONiC",
+            Os::Cumulus => "NVIDIA Cumulus Linux",
             Os::Unknown => "Unknown",
         }
+    }
+
+    pub fn is_cisco(self) -> bool {
+        matches!(self, Os::Ios | Os::IosXe | Os::NxOs | Os::IosXr | Os::Asa | Os::SmallBusiness | Os::CatOs)
+    }
+
+    /// A Linux shell rather than a network CLI.
+    pub fn is_shell(self) -> bool {
+        matches!(self, Os::Cumulus)
+    }
+
+    pub fn all() -> &'static [Os] {
+        &[Os::Ios, Os::IosXe, Os::NxOs, Os::IosXr, Os::Asa, Os::SmallBusiness, Os::CatOs, Os::ArubaOsS, Os::ArubaCx, Os::Junos, Os::Eos, Os::Sonic, Os::Cumulus]
     }
 
     /// Command that turns the pager off for this terminal session only.
@@ -39,7 +69,10 @@ impl Os {
             Os::Asa => Some("terminal pager 0"),
             Os::SmallBusiness => Some("terminal datadump"),
             Os::CatOs => Some("set length 0"),
-            Os::Unknown => None,
+            Os::ArubaOsS | Os::ArubaCx => Some("no page"),
+            Os::Junos => Some("set cli screen-length 0"),
+            Os::Eos | Os::Sonic => Some("terminal length 0"),
+            Os::Cumulus | Os::Unknown => None,
         }
     }
 }
@@ -61,9 +94,31 @@ fn cap(re: &str, text: &str) -> String {
     Regex::new(re).ok().and_then(|r| r.captures(text)).and_then(|c| c.get(1)).map(|m| m.as_str().trim().to_string()).unwrap_or_default()
 }
 
+/// The second thing to ask when `show version` did not identify the device:
+/// a Linux shell (Cumulus, SONiC's bash) answers this.
+pub const SHELL_PROBE: &str = "cat /etc/lsb-release /etc/os-release 2>/dev/null; cat /etc/sonic/sonic_version.yml 2>/dev/null | head -5";
+
+/// `show version` came back from a shell, not a network CLI.
+pub fn looks_like_shell(output: &str) -> bool {
+    let t = output.trim();
+    t.contains("command not found") || t.contains("No such file") || t.starts_with("-bash:") || t.starts_with("bash:") || t.starts_with("sh:")
+}
+
 pub fn detect_os(show_version: &str) -> Os {
     let t = show_version;
-    if t.contains("Cisco Nexus") || t.contains("NX-OS") || t.contains("NXOS:") {
+    if t.contains("Cumulus Linux") || t.contains("DISTRIB_ID=\"Cumulus") || t.contains("ID=cumulus") {
+        Os::Cumulus
+    } else if t.contains("SONiC") || t.contains("sonic") && t.contains("build_version") {
+        Os::Sonic
+    } else if t.contains("Junos") || t.contains("JUNOS") {
+        Os::Junos
+    } else if t.contains("Arista") && (t.contains("Software image version") || t.contains("EOS")) {
+        Os::Eos
+    } else if t.contains("ArubaOS-CX") || t.contains("Aruba CX") || t.contains("AOS-CX") {
+        Os::ArubaCx
+    } else if t.contains("ArubaOS") || t.contains("ProCurve") || t.contains("Software revision") && (t.contains("Aruba") || t.contains("HP ")) {
+        Os::ArubaOsS
+    } else if t.contains("Cisco Nexus") || t.contains("NX-OS") || t.contains("NXOS:") {
         Os::NxOs
     } else if t.contains("IOS XR") || t.contains("IOS-XR") {
         Os::IosXr
@@ -145,6 +200,79 @@ pub fn parse_facts(show_version: &str) -> Facts {
             f.model = cap(r"(?m)^\s*\d+\s+\d+\s+(WS-\S+)", t);
             f.uptime = cap(r"(?m)Uptime is (.+)$", t);
         }
+        Os::ArubaOsS => {
+            // Software revision  : WC.16.11.0012 ; "Aruba JL322A 2930M-48G-PoE+ Switch"
+            f.version = cap(r"(?m)Software revision\s*:\s*(\S+)", t);
+            if f.version.is_empty() {
+                f.version = cap(r"(?m)Image stamp:[\s\S]*?\n\s*(\S+)\s*$", t);
+            }
+            f.model = cap(r"(?m)^\s*(?:Aruba|HP|HPE)\s+(J\w{4}A?\s+\S+(?: \S+)*?)\s+Switch", t);
+            if f.model.is_empty() {
+                f.model = cap(r"(?m)^\s*(?:Aruba|HP|HPE)\s+(J\w{4}A?\s+[^\n]+)", t);
+            }
+            f.hostname = cap(r"(?m)^\s*System Name\s*:\s*(.+?)\s*$", t);
+            f.uptime = cap(r"(?m)^\s*Up Time\s*:\s*(.+?)\s*$", t);
+            f.serial = cap(r"(?m)^\s*Serial Number\s*:\s*(\S+)", t);
+            f.image = cap(r"(?m)^\s*(?:Build|Boot) Image\s*:\s*(.+?)\s*$", t);
+        }
+        Os::ArubaCx => {
+            // ArubaOS-CX  Version : FL.10.13.1010 ; Product Name : 6300M 48G ...
+            f.version = cap(r"(?m)^\s*Version\s*:\s*(\S+)", t);
+            f.model = cap(r"(?m)^\s*Product Name\s*:\s*(.+?)\s*$", t);
+            f.hostname = cap(r"(?m)^\s*Hostname\s*:\s*(\S+)", t);
+            f.uptime = cap(r"(?m)^\s*Up Time\s*:\s*(.+?)\s*$", t);
+            f.serial = cap(r"(?m)^\s*(?:Chassis )?Serial (?:Nbr|Number)\s*:\s*(\S+)", t);
+            f.image = cap(r"(?m)^\s*Build Date\s*:\s*(.+?)\s*$", t);
+        }
+        Os::Junos => {
+            // Hostname: core1 / Model: ex4300-48p / Junos: 21.4R3-S4.9
+            f.hostname = cap(r"(?m)^Hostname:\s*(\S+)", t);
+            f.model = cap(r"(?m)^Model:\s*(\S+)", t);
+            f.version = cap(r"(?m)^Junos:\s*(\S+)", t);
+            if f.version.is_empty() {
+                f.version = cap(r"(?m)JUNOS \S+ \[(\S+)\]", t);
+            }
+            f.serial = cap(r"(?m)^Chassis\s+(\S+)\s+\S+", t);
+            f.uptime = cap(r"(?m)System booted:\s*.*?\(([^)]+) ago\)", t);
+            if f.uptime.is_empty() {
+                f.uptime = cap(r"(?m)up (\d+ days?,\s*[\d:]+|[\d:]+)", t);
+            }
+            f.image = cap(r"(?m)^Junos:\s*(\S+)", t);
+        }
+        Os::Eos => {
+            // Arista DCS-7050SX3-48YC8-R / Software image version: 4.29.2F / Uptime: 10 days, ...
+            f.model = cap(r"(?m)^(?:Arista\s+)?(DCS-\S+|CCS-\S+|vEOS\S*|\S+-\S+)\s*$", t);
+            f.version = cap(r"(?m)^Software image version:\s*(\S+)", t);
+            f.serial = cap(r"(?m)^Serial number:\s*(\S+)", t);
+            f.uptime = cap(r"(?m)^Uptime:\s*(.+?)\s*$", t);
+            f.image = cap(r"(?m)^Architecture:\s*(\S+)", t);
+        }
+        Os::Sonic => {
+            f.version = cap(r"(?m)SONiC Software Version:\s*(\S+)", t);
+            if f.version.is_empty() {
+                f.version = cap(r"(?m)build_version:\s*'?([^'\n]+)", t);
+            }
+            f.model = cap(r"(?m)^\s*HwSKU:\s*(\S+)", t);
+            if f.model.is_empty() {
+                f.model = cap(r"(?m)^\s*Platform:\s*(\S+)", t);
+            }
+            f.serial = cap(r"(?m)^\s*Serial Number:\s*(\S+)", t);
+            f.uptime = cap(r"(?m)^\s*Uptime:\s*(.+?)\s*$", t);
+            f.image = cap(r"(?m)^\s*Distribution:\s*(.+?)\s*$", t);
+        }
+        Os::Cumulus => {
+            // DISTRIB_RELEASE=5.9.0 or "Cumulus Linux 4.4.5" or nv show system
+            f.version = cap(r#"(?m)DISTRIB_RELEASE="?([\d.]+)"#, t);
+            if f.version.is_empty() {
+                f.version = cap(r"(?m)Cumulus Linux\s+v?([\d.]+)", t);
+            }
+            if f.version.is_empty() {
+                f.version = cap(r"(?m)^\s*version\s+(\S+)", t);
+            }
+            f.hostname = cap(r"(?m)^\s*hostname\s+(\S+)", t);
+            f.model = cap(r"(?m)^\s*(?:model|Model)\s*[: ]\s*(.+?)\s*$", t);
+            f.uptime = cap(r"(?m)^\s*uptime\s+(.+?)\s*$", t);
+        }
         Os::Unknown => {}
     }
     f
@@ -181,6 +309,54 @@ System serial number            : FOC2222X0AB\n";
         assert_eq!(detect_os("Cisco IOS XR Software, Version 7.5.2\nasr9k uptime is 1 week"), Os::IosXr);
         assert_eq!(detect_os(SG), Os::SmallBusiness);
         assert_eq!(detect_os("nothing useful"), Os::Unknown);
+    }
+
+    const AOSS: &str = "Image stamp:    /ws/swbuildm/rel_ukiah_qaoff/code/build/lvm(swbuildm_rel_ukiah_qaoff_rel_ukiah)\n                Jul  6 2023 10:11:57\n                WC.16.11.0012\n                1023\nBoot Image:     Primary\n\nBoot ROM Version:    WC.16.01.0010\nActive Boot ROM:     WC.16.01.0010\n\n Status and Counters - General System Information\n\n  System Name        : sw-floor2\n  System Contact     :\n  Software revision  : WC.16.11.0012\n  Up Time            : 120 days\n  Serial Number      : CN12ABC345\n  Aruba JL322A 2930M-48G-PoE+ Switch\n";
+    const CX: &str = "ArubaOS-CX\n(c) Copyright 2017-2023 Hewlett Packard Enterprise Development LP\n\nVersion      : FL.10.13.1010\nBuild Date   : 2023-11-06 09:32:01 PDT\nBuild ID     : ArubaOS-CX:FL.10.13.1010:f7a2:20231106\nBuild SHA    : f7a2b\nActive Image : primary\n\nService OS Version : FL.01.13.0001\nBIOS Version       : FL.01.0003\n\nHostname      : core-cx1\nProduct Name  : 6300M 48G CL4 PoE 4SFP56 Swch\nChassis Serial Nbr : SG1ZK7D0AB\nUp Time       : 45 days, 3 hours, 10 minutes\n";
+    const JUNOS: &str = "Hostname: edge-ex1\nModel: ex4300-48p\nJunos: 21.4R3-S4.9\nJUNOS OS Kernel 64-bit  [20231020.ba4fb1a_builder_stable_12_212]\nJUNOS OS libs [20231020.ba4fb1a_builder_stable_12_212]\n";
+    const EOS: &str = "Arista DCS-7050SX3-48YC8-R\nHardware version: 11.00\nSerial number: JPE19283746\nHardware MAC address: 2899.3a1b.2c3d\nSystem MAC address: 2899.3a1b.2c3d\n\nSoftware image version: 4.29.2F\nArchitecture: x86_64\nInternal build version: 4.29.2F-32308478.4292F\nInternal build ID: 1234\nImage format version: 3.0\nImage optimization: Default\n\nUptime: 10 days, 4 hours and 2 minutes\nTotal memory: 8098976 kB\nFree memory: 5560316 kB\n";
+    const SONIC: &str = "SONiC Software Version: SONiC.4.3.0-cisco\nSONiC OS Version: 12\nDistribution: Debian 12.1\nKernel: 6.1.0\nBuild commit: 0a1b2c3\nBuild date: Tue Jan 09 2024\nBuilt by: builder\n\nPlatform: x86_64-cisco_8101_32fh_o-r0\nHwSKU: Cisco-8101-O32\nASIC: cisco-8000\nASIC Count: 1\nSerial Number: FLM2740ABCD\nModel Number: 8101-32FH-O\nHardware Revision: 1.0\nUptime: 09:23:11 up 30 days, 2:10, 1 user, load average: 1.20, 1.10, 1.05\n";
+    const CUMULUS: &str = "DISTRIB_ID=\"Cumulus Linux\"\nDISTRIB_RELEASE=5.9.0\nDISTRIB_DESCRIPTION=\"Cumulus Linux 5.9.0\"\nNAME=\"Cumulus Linux\"\nVERSION_ID=5.9.0\nID=cumulus-linux\n";
+
+    #[test]
+    fn detects_other_vendors() {
+        assert_eq!(detect_os(AOSS), Os::ArubaOsS);
+        assert_eq!(detect_os(CX), Os::ArubaCx);
+        assert_eq!(detect_os(JUNOS), Os::Junos);
+        assert_eq!(detect_os(EOS), Os::Eos);
+        assert_eq!(detect_os(SONIC), Os::Sonic);
+        assert_eq!(detect_os(CUMULUS), Os::Cumulus);
+        assert!(looks_like_shell("-bash: show: command not found"));
+        assert!(!looks_like_shell(IOS));
+    }
+
+    #[test]
+    fn facts_other_vendors() {
+        let f = parse_facts(AOSS);
+        assert_eq!(f.version, "WC.16.11.0012");
+        assert_eq!(f.hostname, "sw-floor2");
+        assert_eq!(f.serial, "CN12ABC345");
+        assert!(f.model.starts_with("JL322A 2930M"), "{}", f.model);
+        let f = parse_facts(CX);
+        assert_eq!(f.version, "FL.10.13.1010");
+        assert_eq!(f.hostname, "core-cx1");
+        assert_eq!(f.model, "6300M 48G CL4 PoE 4SFP56 Swch");
+        assert_eq!(f.serial, "SG1ZK7D0AB");
+        let f = parse_facts(JUNOS);
+        assert_eq!(f.hostname, "edge-ex1");
+        assert_eq!(f.model, "ex4300-48p");
+        assert_eq!(f.version, "21.4R3-S4.9");
+        let f = parse_facts(EOS);
+        assert_eq!(f.model, "DCS-7050SX3-48YC8-R");
+        assert_eq!(f.version, "4.29.2F");
+        assert_eq!(f.serial, "JPE19283746");
+        assert!(f.uptime.starts_with("10 days"));
+        let f = parse_facts(SONIC);
+        assert_eq!(f.version, "SONiC.4.3.0-cisco");
+        assert_eq!(f.model, "Cisco-8101-O32");
+        assert_eq!(f.serial, "FLM2740ABCD");
+        let f = parse_facts(CUMULUS);
+        assert_eq!(f.version, "5.9.0");
     }
 
     #[test]

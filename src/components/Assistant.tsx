@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { loadData, saveData } from "../lib/backend";
 import {
-  aiCancel, aiChat, classifyCommands, commandBlocks, QUICK_ACTIONS, systemPrompt, userTurn, type AiSettings, type AuditEntry,
+  aiCancel, aiChat, classifyCommands, commandBlocks, normalizeCommand, QUICK_ACTIONS, systemPrompt, userTurn, type AiSettings, type AuditEntry,
   type ChatMessage, type Classified, type Context, type Kind,
 } from "../lib/ai";
 import { isUnlocked, lock, unlock } from "../lib/lock";
@@ -31,6 +31,8 @@ interface Props {
 interface Turn {
   role: "user" | "assistant";
   content: string;
+  /** what the chat shows for an internal follow-up instead of the prompt text */
+  display?: string;
   /** reviewed command blocks found in an assistant reply */
   blocks?: Review[];
   streaming?: boolean;
@@ -41,7 +43,7 @@ interface Review {
   title: string;
   items: Classified[];
   kind: Kind;
-  state: "proposed" | "running" | "done" | "failed" | "dismissed";
+  state: "proposed" | "running" | "done" | "failed" | "dismissed" | "superseded";
   outputs: { command: string; output: string; error?: boolean }[];
   backup: string | null;
   /** how many automatic follow-ups led here (bounded, so a wrong command cannot loop forever) */
@@ -84,7 +86,14 @@ export default function Assistant(props: Props) {
 
   const ctx = (output: string, outputLabel: string): Context => ({ facts, hostname, environment, report, output, outputLabel, settings: ai });
 
-  async function ask(question: string, output = "", outputLabel = "Terminal output", depth = 0) {
+  /** every command already sent to the device from this conversation (ran or rejected) */
+  function alreadyRun(): Set<string> {
+    const seen = new Set<string>();
+    for (const t of st.turns) for (const b of t.blocks ?? []) for (const o of b.outputs) seen.add(o.command.trim().toLowerCase());
+    return seen;
+  }
+
+  async function ask(question: string, output = "", outputLabel = "Terminal output", depth = 0, display?: string) {
     if (!provider) {
       onToast("Add an AI provider in Settings → Assistant first");
       onOpenSettings();
@@ -92,7 +101,7 @@ export default function Assistant(props: Props) {
     }
     if (busy) return;
     const c = ctx(output, outputLabel);
-    const user: Turn = { role: "user", content: userTurn(question, c) };
+    const user: Turn = { role: "user", content: userTurn(question, c), display };
     const reply: Turn = { role: "assistant", content: "", streaming: true };
     st.turns.push(user, reply);
     refresh();
@@ -109,8 +118,13 @@ export default function Assistant(props: Props) {
         }
       });
       reply.streaming = false;
-      const blocks = commandBlocks(reply.content);
+      const seen = alreadyRun();
+      const blocks = commandBlocks(reply.content)
+        .map((b) => ({ ...b, commands: b.commands.map((cmd) => normalizeCommand(cmd, facts?.os ?? null)).filter((cmd, i, all) => all.indexOf(cmd) === i && !seen.has(cmd.toLowerCase())) }))
+        .filter((b) => b.commands.length);
       if (blocks.length) {
+        // a newer proposal replaces the read-only cards still waiting from earlier turns
+        for (const t of st.turns) for (const b of t.blocks ?? []) if (b.state === "proposed" && b.kind === "read-only") b.state = "superseded";
         const reviews = await Promise.all(blocks.map(async (b) => {
           const items = await classifyCommands(b.commands);
           const kind: Kind = items.some((i) => i.kind === "disruptive") ? "disruptive" : items.some((i) => i.kind === "config") ? "config" : "read-only";
@@ -205,18 +219,30 @@ export default function Assistant(props: Props) {
     if (review.depth < 3 && review.outputs.length > 0) void followUp(review);
   }
 
+  function outputSummary(b: Review): string {
+    const rejected = b.outputs.filter((o) => o.error).length;
+    if (b.state === "failed" && b.kind !== "read-only") return "Stopped: a line was rejected";
+    if (rejected) return `Finished, ${rejected} of ${b.outputs.length} command${b.outputs.length === 1 ? "" : "s"} rejected`;
+    return b.state === "running" ? "Output so far" : "Output";
+  }
+
   function outputsText(review: Review) {
     return review.outputs.map((o) => `${o.command}\n${o.output || "(no output)"}`).join("\n\n");
   }
 
   async function followUp(review: Review) {
     const bad = review.outputs.filter((o) => o.error);
+    const good = review.outputs.filter((o) => !o.error);
+    const ran = Array.from(alreadyRun()).map((c) => `\`${c}\``).join(", ");
     const question = bad.length
-      ? `The device rejected ${bad.length === 1 ? "this command" : "these commands"}: ${bad.map((o) => `\`${o.command}\``).join(", ")}. Give the corrected command for this exact OS and version in a new \`cli\` block (or say it does not exist here and what to use instead), then interpret the output that did come back.`
+      ? `${bad.length === 1 ? "One command was" : `${bad.length} commands were`} rejected by the device: ${bad.map((o) => `\`${o.command}\``).join(", ")}. ${good.length ? `The other ${good.length} ran; interpret ALL of their output first under **Verified**, command by command. ` : ""}Then, under **Corrected command**, give one replacement that exists on this exact OS and version in a \`cli\` block, or say the information is not available here. Do not propose any command that already ran: ${ran}.`
       : review.kind === "read-only"
-        ? "Here is the output of the commands you proposed. Interpret it: what it confirms, what it rules out, and the next command if one is needed."
+        ? `Here is the output of the commands you proposed. Interpret all of it: what each command confirms, what it rules out, and the next command only if one is needed. Already run, do not repeat: ${ran}.`
         : "The configuration was applied; here is what the device printed. Confirm it took effect from the output and propose the show command that verifies it.";
-    await ask(question, outputsText(review), "Command output", review.depth + 1);
+    const display = bad.length
+      ? `Following up: ${bad.length} rejected, ${good.length} with output`
+      : `Following up on the output of ${review.outputs.length} command${review.outputs.length === 1 ? "" : "s"}`;
+    await ask(question, outputsText(review), "Command output", review.depth + 1, display);
   }
 
   const canRun = !!sessionId;
@@ -266,7 +292,9 @@ export default function Assistant(props: Props) {
         )}
         {st.turns.map((t, ti) => (
           <div key={ti} className={`turn ${t.role}`}>
-            {t.role === "user" ? <pre className="user-text">{t.content.split("\n\n")[0]}{t.content.includes("```") ? <span className="quiet"> · with output</span> : ""}</pre> : (
+            {t.role === "user" ? (
+              t.display ? <div className="user-note">{t.display}</div> : <pre className="user-text">{t.content.split("\n\n")[0]}{t.content.includes("```") ? <span className="quiet"> · with output</span> : ""}</pre>
+            ) : (
               <>
                 <Markdown text={t.content || (t.streaming ? "…" : "")} hideCommands={!!t.blocks?.length} />
                 {t.redacted ? <div className="quiet small">{t.redacted} secret{t.redacted === 1 ? "" : "s"} redacted before sending</div> : null}
@@ -275,14 +303,15 @@ export default function Assistant(props: Props) {
                     <div className="review-head">
                       <span className={`kind-chip ${b.kind}`}>{KIND_LABEL[b.kind]}</span>
                       <span className="strong">{b.title || `${b.items.length} command${b.items.length === 1 ? "" : "s"}`}</span>
+                      {b.state === "superseded" && <span className="quiet small">superseded by a newer proposal</span>}
                       <span className="grow" />
                       {b.state === "proposed" && <button className="icon-btn" title="Dismiss" onClick={() => { b.state = "dismissed"; refresh(); }}><CloseIcon /></button>}
                     </div>
-                    <ol className="review-lines">
+                    {b.state !== "superseded" && <ol className="review-lines">
                       {b.items.map((it, k) => (
                         <li key={k} className={it.kind}><code>{it.command}</code>{it.kind !== "read-only" && <span className="reason">{it.reason}</span>}</li>
                       ))}
-                    </ol>
+                    </ol>}
                     {b.state === "proposed" && (
                       <div className="row">
                         <button className="btn small" onClick={() => void navigator.clipboard.writeText(b.items.map((i) => i.command).join("\n"))}>Copy</button>
@@ -323,7 +352,7 @@ export default function Assistant(props: Props) {
                     {b.state === "running" && <div className="quiet small">Running… {b.outputs.length}/{b.items.length}</div>}
                     {b.outputs.length > 0 && (
                       <details className="raw" open={b.state === "failed"}>
-                        <summary>{b.state === "failed" ? "Stopped with an error" : "Output"}{b.backup ? " · backup saved" : ""}</summary>
+                        <summary>{outputSummary(b)}{b.backup ? " · backup saved" : ""}</summary>
                         {b.outputs.map((o, k) => <pre key={k} className={o.error ? "rejected" : ""}>{o.command ? `${o.command}\n` : ""}{o.output || "(no output)"}</pre>)}
                       </details>
                     )}
@@ -354,7 +383,7 @@ export default function Assistant(props: Props) {
       >
         <textarea
           value={input}
-          placeholder={provider ? "Ask about the device, or describe a configuration to generate. Selected terminal output is attached." : "Add a provider in Settings → Assistant"}
+          placeholder={provider ? "Ask about the device… (selected output is attached)" : "Add a provider in Settings → Assistant"}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {

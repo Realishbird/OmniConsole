@@ -8,6 +8,7 @@ mod deploy;
 mod files;
 mod launch;
 mod nettools;
+mod platforms;
 mod redact;
 mod session;
 mod store;
@@ -80,6 +81,9 @@ pub fn run() {
             deploy::firmware_inspect,
             deploy::firmware_plan,
             tools::complete,
+            platforms::platform_profile,
+            platforms::platforms_list,
+            platforms::collect_run,
             files::files_open,
             files::files_close,
             files::files_list,

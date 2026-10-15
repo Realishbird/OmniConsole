@@ -1,12 +1,21 @@
 // Types and wrappers for the Tools panel commands (src-tauri/src/tools.rs).
 import { Channel, invoke } from "@tauri-apps/api/core";
 
-export type Os = "ios" | "ios-xe" | "nx-os" | "ios-xr" | "asa" | "small-business" | "cat-os" | "unknown";
+export type Os = "ios" | "ios-xe" | "nx-os" | "ios-xr" | "asa" | "small-business" | "cat-os" | "aos-s" | "aos-cx" | "junos" | "eos" | "sonic" | "cumulus" | "unknown";
 
 export const OS_LABEL: Record<Os, string> = {
   ios: "IOS", "ios-xe": "IOS-XE", "nx-os": "NX-OS", "ios-xr": "IOS-XR", asa: "ASA",
-  "small-business": "Small Business", "cat-os": "CatOS", unknown: "Unknown",
+  "small-business": "Small Business", "cat-os": "CatOS", "aos-s": "Aruba AOS-S", "aos-cx": "Aruba AOS-CX",
+  junos: "Junos", eos: "Arista EOS", sonic: "SONiC", cumulus: "Cumulus Linux", unknown: "Unknown",
 };
+
+export const OS_VENDOR: Record<Os, string> = {
+  ios: "Cisco", "ios-xe": "Cisco", "nx-os": "Cisco", "ios-xr": "Cisco", asa: "Cisco", "small-business": "Cisco", "cat-os": "Cisco",
+  "aos-s": "Aruba (HPE)", "aos-cx": "Aruba (HPE)", junos: "Juniper", eos: "Arista", sonic: "Cisco (SONiC)", cumulus: "NVIDIA", unknown: "",
+};
+
+/** Every platform the checks know, for the manual override when detection is inconclusive. */
+export const OS_CHOICES: Os[] = ["ios", "ios-xe", "nx-os", "ios-xr", "asa", "small-business", "aos-s", "aos-cx", "junos", "eos", "sonic", "cumulus"];
 
 export interface Facts {
   os: Os | null;
@@ -19,9 +28,12 @@ export interface Facts {
   reloadReason: string;
 }
 
-export type Status = "pass" | "warn" | "fail" | "unknown" | "skipped";
+export type Status = "healthy" | "warning" | "critical" | "not-applicable" | "unsupported" | "not-collected";
 
-export const STATUS_LABEL: Record<Status, string> = { pass: "Pass", warn: "Warning", fail: "Fail", unknown: "Unknown", skipped: "Skipped" };
+export const STATUS_LABEL: Record<Status, string> = { healthy: "Healthy", warning: "Warning", critical: "Critical", "not-applicable": "Not applicable", unsupported: "Unsupported", "not-collected": "Not collected" };
+/** worst first */
+export const STATUS_ORDER: Record<Status, number> = { critical: 0, warning: 1, "not-collected": 2, healthy: 3, unsupported: 4, "not-applicable": 5 };
+export type Tier = "quick" | "detailed";
 
 export interface Table {
   title: string;
@@ -39,12 +51,17 @@ export interface CheckResult {
   followUp: string[];
   commands: string[];
   table?: Table;
+  /** unix seconds when the commands were collected */
+  collectedAt: number;
+  /** what to do about it, when the status is not healthy */
+  nextStep: string;
 }
 
 export interface CheckInfo {
   id: string;
   title: string;
   category: string;
+  quick: boolean;
   commands: string[];
 }
 
@@ -107,10 +124,10 @@ export const detectDevice = (id: string) => invoke<Facts>("device_detect", { id 
 export const checksCatalog = (os: Os | null) => invoke<CheckInfo[]>("checks_catalog", { os });
 export const cancelChecks = (id: string) => invoke("checks_cancel", { id });
 
-export function runChecks(id: string, facts: Facts | null, ids: string[], onProgress: (p: CheckProgress) => void): Promise<CheckReport> {
+export function runChecks(id: string, facts: Facts | null, ids: string[], tier: Tier | null, onProgress: (p: CheckProgress) => void, osOverride: Os | null = null): Promise<CheckReport> {
   const events = new Channel<CheckProgress>();
   events.onmessage = onProgress;
-  return invoke<CheckReport>("checks_run", { id, os: facts?.os ?? null, facts, ids, events });
+  return invoke<CheckReport>("checks_run", { id, os: osOverride ?? facts?.os ?? null, facts, ids, tier, events });
 }
 
 export const backupConfig = (id: string, os: Os | null, site: string, device: string, kinds: string[]) =>

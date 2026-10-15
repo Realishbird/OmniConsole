@@ -5,16 +5,17 @@ import Workstation from "./Workstation";
 import Workflows from "./Workflows";
 import DeployPanel from "./DeployPanel";
 import FilesPanel from "./FilesPanel";
+import Collect from "./Collect";
 import type { SessionSpec } from "../lib/terminal";
 import type { AiSettings } from "../lib/ai";
 import {
   backupConfig, bundleFiles, cancelChecks, checksCatalog, compareReports, deleteConfig, detectDevice, diffConfigs, fileStamp,
-  listConfigs, OS_LABEL, openConfigFolder, outputText, readConfig, revealConfig, runChecks, runCommand, saveBundle, saveReport,
-  searchConfigs, stamp, STATUS_LABEL, type Backup, type Change, type CheckInfo, type CheckProgress, type CheckReport,
-  type CheckResult, type DiffResult, type Facts, type SearchHit, type Status, type Table,
+  listConfigs, OS_CHOICES, OS_LABEL, openConfigFolder, outputText, readConfig, revealConfig, runChecks, runCommand, saveBundle, saveReport,
+  searchConfigs, stamp, STATUS_LABEL, STATUS_ORDER, type Backup, type Change, type CheckInfo, type CheckProgress, type CheckReport,
+  type CheckResult, type DiffResult, type Facts, type Os, type SearchHit, type Status, type Table, type Tier,
 } from "../lib/tools";
 
-export type ToolsSection = "checks" | "configs" | "assistant" | "workstation" | "workflows" | "deploy" | "files";
+export type ToolsSection = "checks" | "collect" | "configs" | "assistant" | "workstation" | "workflows" | "deploy" | "files";
 
 
 interface Props {
@@ -55,15 +56,19 @@ interface TabTools {
   selected: string[];
   error: string | null;
   every: number;
+  /** quick or detailed set when no explicit selection */
+  tier: Tier;
+  /** manual platform choice when detection is inconclusive or wrong */
+  osOverride: Os | null;
+  /** the "pre" snapshot of a pre/post comparison, kept apart from saved baselines */
+  pre: CheckReport | null;
 }
 
 const cache = new Map<string, TabTools>();
 
 function fresh(): TabTools {
-  return { facts: null, report: null, baseline: null, baselineLabel: "", running: false, progress: null, live: [], selected: [], error: null, every: 0 };
+  return { facts: null, report: null, baseline: null, baselineLabel: "", running: false, progress: null, live: [], selected: [], error: null, every: 0, tier: "quick", osOverride: null, pre: null };
 }
-
-const STATUS_ORDER: Record<Status, number> = { fail: 0, warn: 1, unknown: 2, pass: 3, skipped: 4 };
 
 export default function ToolsPanel(props: Props) {
   const { sessionId, tabKey, section, onSection, onClose } = props;
@@ -84,6 +89,7 @@ export default function ToolsPanel(props: Props) {
         <div className="dialog-tabs">
           <button className={section === "assistant" ? "on" : ""} onClick={() => onSection("assistant")}>Assistant</button>
           <button className={section === "checks" ? "on" : ""} onClick={() => onSection("checks")}>Checks</button>
+          <button className={section === "collect" ? "on" : ""} onClick={() => onSection("collect")}>Collect</button>
           <button className={section === "workflows" ? "on" : ""} onClick={() => onSection("workflows")}>Workflows</button>
           <button className={section === "configs" ? "on" : ""} onClick={() => onSection("configs")}>Configs</button>
           <button className={section === "deploy" ? "on" : ""} onClick={() => onSection("deploy")}>Deploy</button>
@@ -94,6 +100,9 @@ export default function ToolsPanel(props: Props) {
       </div>
       {section === "checks" && <Checks {...props} st={st} update={update} />}
       {section === "configs" && <Configs {...props} st={st} update={update} />}
+      {section === "collect" && (
+        <Collect sessionId={sessionId} tabKey={tabKey} facts={st.facts} onFacts={(facts) => update({ facts })} deviceName={props.deviceName} maskSecrets={props.maskSecrets} onToast={props.onToast} onSend={props.onSend} onAsk={(question, output) => { setPendingAsk({ question, output }); onSection("assistant"); }} />
+      )}
       {section === "assistant" && (
         <Assistant
           sessionId={sessionId}
@@ -152,24 +161,27 @@ function Checks({ sessionId, tabKey, deviceName, site, maskSecrets, onSend, onTo
     void listConfigs(deviceName).then((b) => setBaselines(b.filter((x) => x.kind === "checks")));
   }, [deviceName, st.report]);
 
-  const run = useCallback(async () => {
+  const run = useCallback(async (tier?: Tier) => {
     if (!sessionId || st.running) return;
-    update({ running: true, error: null, live: [], progress: null });
+    const t = tier ?? st.tier;
+    update({ running: true, error: null, live: [], progress: null, tier: t });
     try {
       let facts = st.facts;
       if (!facts) {
         facts = await detectDevice(sessionId);
         update({ facts });
       }
-      const report = await runChecks(sessionId, facts, st.selected, (p: CheckProgress) => {
+      const report = await runChecks(sessionId, facts, st.selected, st.selected.length ? null : t, (p: CheckProgress) => {
         const cur = cache.get(tabKey)!;
         if (p.type === "command") update({ progress: { command: p.command, index: p.index, total: p.total } });
         else if (p.type === "result") update({ live: [...cur.live, p.result] });
-      });
-      update({ report, facts: report.facts, running: false, progress: null });
-      const fails = report.results.filter((r) => r.status === "fail").length;
-      const warns = report.results.filter((r) => r.status === "warn").length;
-      onToast(fails ? `${fails} failed, ${warns} warning${warns === 1 ? "" : "s"}` : warns ? `${warns} warning${warns === 1 ? "" : "s"}, nothing failed` : "All checks passed");
+      }, st.osOverride);
+      update({ report, facts: st.osOverride ? { ...report.facts, os: st.osOverride } : report.facts, running: false, progress: null });
+      const crit = report.results.filter((r) => r.status === "critical").length;
+      const warns = report.results.filter((r) => r.status === "warning").length;
+      const missing = report.results.filter((r) => r.status === "not-collected").length;
+      const tail = missing ? `, ${missing} not collected` : "";
+      onToast(crit ? `${crit} critical, ${warns} warning${warns === 1 ? "" : "s"}${tail}` : warns ? `${warns} warning${warns === 1 ? "" : "s"}, nothing critical${tail}` : missing ? `Nothing wrong found${tail}` : "All checks healthy");
     } catch (e) {
       update({ running: false, progress: null, error: String(e) });
     }
@@ -190,11 +202,12 @@ function Checks({ sessionId, tabKey, deviceName, site, maskSecrets, onSend, onTo
   const results = st.running ? st.live : st.report?.results ?? [];
   const sorted = useMemo(() => [...results].sort((a, b) => STATUS_ORDER[a.status] - STATUS_ORDER[b.status]), [results]);
   const counts = useMemo(() => {
-    const c: Record<Status, number> = { pass: 0, warn: 0, fail: 0, unknown: 0, skipped: 0 };
+    const c: Record<Status, number> = { healthy: 0, warning: 0, critical: 0, "not-applicable": 0, unsupported: 0, "not-collected": 0 };
     for (const r of results) c[r.status]++;
     return c;
   }, [results]);
-  const changes: Change[] = useMemo(() => (st.baseline && st.report ? compareReports(st.baseline, st.report) : []), [st.baseline, st.report]);
+  const compareWith = st.pre ?? st.baseline;
+  const changes: Change[] = useMemo(() => (compareWith && st.report && compareWith !== st.report ? compareReports(compareWith, st.report) : []), [compareWith, st.report]);
   const categories = useMemo(() => Array.from(new Set(catalog.map((c) => c.category))), [catalog]);
 
   async function saveBaseline() {
@@ -243,10 +256,18 @@ function Checks({ sessionId, tabKey, deviceName, site, maskSecrets, onSend, onTo
         {st.running ? (
           <button className="btn" onClick={() => sessionId && void cancelChecks(sessionId)}><StopIcon /> Stop</button>
         ) : (
-          <button className="btn primary" disabled={!sessionId} onClick={() => void run()}><PlayIcon /> Run checks</button>
+          <>
+            <button className="btn primary" disabled={!sessionId} title="System, resources, hardware, interface errors, logs, time: the checks that matter every visit" onClick={() => void run("quick")}><PlayIcon /> Quick</button>
+            <button className="btn" disabled={!sessionId} title="Every check for this platform" onClick={() => void run("detailed")}>Detailed</button>
+            {st.pre ? (
+              <button className="btn" disabled={!sessionId} title="Run the same checks again and compare with the pre-change snapshot" onClick={() => void run()}>Post-change</button>
+            ) : (
+              <button className="btn" disabled={!st.report} title="Keep the latest run as the pre-change snapshot; the next run is compared with it" onClick={() => update({ pre: st.report })}>Pre-change</button>
+            )}
+          </>
         )}
         <button className={`btn${pickOpen ? " on" : ""}`} onClick={() => setPickOpen((v) => !v)} title="Choose which checks run">
-          {st.selected.length ? `${st.selected.length} of ${catalog.length}` : "All checks"}
+          {st.selected.length ? `${st.selected.length} of ${catalog.length}` : "Pick"}
         </button>
         <select className="tools-every" value={st.every} onChange={(e) => update({ every: Number(e.target.value) })} title="Repeat the checks while this tab stays open">
           <option value={0}>Run once</option>
@@ -292,7 +313,11 @@ function Checks({ sessionId, tabKey, deviceName, site, maskSecrets, onSend, onTo
       {f && (
         <div className="tools-facts">
           <span className="strong">{f.hostname || deviceName}</span>
-          <span>{f.os ? OS_LABEL[f.os] : "Unknown OS"} {f.version}</span>
+          <select className="os-pick" value={st.osOverride ?? f.os ?? "unknown"} title="Platform: detected from show version. Pick one when detection is inconclusive or wrong." onChange={(e) => { const v = e.target.value as Os; update({ osOverride: v === (f.os ?? "unknown") ? null : v }); }}>
+            {(f.os === null || f.os === "unknown") && <option value="unknown">Unknown OS (choose)</option>}
+            {OS_CHOICES.map((o) => <option key={o} value={o}>{OS_LABEL[o]}{o === f.os ? " (detected)" : ""}</option>)}
+          </select>
+          <span>{f.version}</span>
           {f.model && <span>{f.model}</span>}
           {f.serial && <span>SN {f.serial}</span>}
           {f.uptime && <span>up {f.uptime}</span>}
@@ -309,12 +334,19 @@ function Checks({ sessionId, tabKey, deviceName, site, maskSecrets, onSend, onTo
 
       {results.length > 0 && (
         <div className="tools-summary">
-          {(["fail", "warn", "pass", "unknown", "skipped"] as Status[]).map((s) => counts[s] > 0 && <span key={s} className={`status-chip ${s}`}>{counts[s]} {STATUS_LABEL[s].toLowerCase()}</span>)}
-          {st.report && <span className="quiet">{stamp(st.report.finished)}{st.report.cancelled ? " (stopped early)" : ""}</span>}
+          {(["critical", "warning", "not-collected", "healthy", "unsupported", "not-applicable"] as Status[]).map((s) => counts[s] > 0 && <span key={s} className={`status-chip ${s}`}>{counts[s]} {STATUS_LABEL[s].toLowerCase()}</span>)}
+          {st.report && <span className="quiet">{stamp(st.report.finished)}{st.report.cancelled ? " (stopped early)" : ""}{st.selected.length ? "" : st.tier === "quick" ? " · quick" : " · detailed"}</span>}
         </div>
       )}
 
-      {(baselines.length > 0 || st.baseline) && (
+      {st.pre && (
+        <div className="tools-baseline">
+          <span>Pre-change snapshot {stamp(st.pre.finished)}</span>
+          {st.report && st.report !== st.pre && <span className={changes.length ? "warn-text" : "quiet"}>{changes.length ? `${changes.length} change${changes.length === 1 ? "" : "s"} since` : "no status changes since"}</span>}
+          <button className="btn small" onClick={() => update({ pre: null })}>Forget</button>
+        </div>
+      )}
+      {!st.pre && (baselines.length > 0 || st.baseline) && (
         <div className="tools-baseline">
           <span>Compare with</span>
           <select value={st.baselineLabel ? baselines.find((b) => stamp(b.timestamp) === st.baselineLabel)?.path ?? "" : ""} onChange={(e) => e.target.value ? void loadBaseline(e.target.value) : update({ baseline: null, baselineLabel: "" })}>
@@ -345,6 +377,8 @@ function Checks({ sessionId, tabKey, deviceName, site, maskSecrets, onSend, onTo
             {open[r.id] && (
               <div className="check-detail">
                 {r.evidence.length > 0 && <pre className="evidence">{r.evidence.join("\n")}</pre>}
+                {r.nextStep && <div className="next-step"><span className="strong">Next step:</span> {r.nextStep}</div>}
+                <div className="quiet small">{STATUS_LABEL[r.status]}{r.collectedAt ? ` · collected ${stamp(r.collectedAt)}` : ""}</div>
                 {r.table && r.table.rows.length > 0 && <DataTable table={r.table} />}
                 {r.followUp.length > 0 && (
                   <div className="follow">

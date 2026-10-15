@@ -65,6 +65,8 @@ export interface DeployReport {
   backup: string | null;
   rollbackCommand: string | null;
   safetyReload: boolean;
+  pending: string;
+  saveCommand: string;
   steps: DeployStep[];
   sent: number;
   failed: boolean;
@@ -77,7 +79,7 @@ export function deployRun(id: string, os: Os | null, site: string, device: strin
   return invoke<DeployReport>("deploy_run", { id, os, site, device, commands, verify, options, events });
 }
 export const deployFinish = (id: string, os: Os | null, cancelReload: boolean, save: boolean) => invoke<DeployStep[]>("deploy_finish", { id, os, cancelReload, save });
-export const deployRollback = (id: string, command: string) => invoke<DeployStep>("deploy_rollback", { id, command });
+export const deployRollback = (id: string, os: Os | null, command: string) => invoke<DeployStep>("deploy_rollback", { id, os, command });
 
 export interface FileSystem {
   name: string;

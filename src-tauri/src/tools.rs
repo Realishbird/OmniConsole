@@ -34,14 +34,14 @@ pub struct ToolState {
 }
 
 impl ToolState {
-    fn start(&self, id: &str) -> Arc<AtomicBool> {
+    pub fn start(&self, id: &str) -> Arc<AtomicBool> {
         let flag = Arc::new(AtomicBool::new(false));
         if let Some(old) = self.cancels.lock().unwrap().insert(id.into(), flag.clone()) {
             old.store(true, Ordering::Relaxed);
         }
         flag
     }
-    fn finish(&self, id: &str) {
+    pub fn finish(&self, id: &str) {
         self.cancels.lock().unwrap().remove(id);
     }
 }
@@ -81,11 +81,34 @@ pub async fn run_command(sessions: State<'_, SessionManager>, id: String, comman
     sessions.run_command(&id, &command, timeout).await.map_err(err)
 }
 
+/// `show version`, then the shell probe when that came back from a Linux
+/// shell (Cumulus, SONiC). Nothing here changes the device.
+async fn detect_facts(sessions: &SessionManager, id: &str) -> CmdResult<Facts> {
+    let text = sessions.run_command(id, "show version", COMMAND_TIMEOUT).await.map_err(err)?;
+    let mut facts = detect::parse_facts(&text);
+    if facts.os.unwrap_or(Os::Unknown) == Os::Unknown && detect::looks_like_shell(&text) {
+        if let Ok(probe) = sessions.run_command(id, detect::SHELL_PROBE, COMMAND_TIMEOUT).await {
+            let f = detect::parse_facts(&probe);
+            if f.os.unwrap_or(Os::Unknown) != Os::Unknown {
+                facts = f;
+                if facts.os == Some(Os::Cumulus) {
+                    if let Ok(sys) = sessions.run_command(id, "nv show system", COMMAND_TIMEOUT).await {
+                        let extra = detect::parse_facts(&format!("Cumulus Linux\n{sys}"));
+                        if facts.hostname.is_empty() { facts.hostname = extra.hostname; }
+                        if facts.uptime.is_empty() { facts.uptime = extra.uptime; }
+                        if facts.model.is_empty() { facts.model = extra.model; }
+                    }
+                }
+            }
+        }
+    }
+    Ok(facts)
+}
+
 /// `show version`, then turn the pager off for the session.
 #[tauri::command]
 pub async fn device_detect(sessions: State<'_, SessionManager>, id: String) -> CmdResult<Facts> {
-    let text = sessions.run_command(&id, "show version", COMMAND_TIMEOUT).await.map_err(err)?;
-    let facts = detect::parse_facts(&text);
+    let facts = detect_facts(&sessions, &id).await?;
     if let Some(cmd) = facts.os.unwrap_or(Os::Unknown).no_paging() {
         let _ = sessions.run_command(&id, cmd, Duration::from_secs(15)).await;
     }
@@ -129,6 +152,7 @@ pub async fn checks_run(
     os: Option<Os>,
     facts: Option<Facts>,
     ids: Vec<String>,
+    tier: Option<checks::Tier>,
     events: Channel<CheckProgress>,
 ) -> CmdResult<CheckReport> {
     let cancel = tools.start(&id);
@@ -137,8 +161,7 @@ pub async fn checks_run(
     let facts = match facts {
         Some(f) => f,
         None => {
-            let text = sessions.run_command(&id, "show version", COMMAND_TIMEOUT).await.map_err(err)?;
-            let f = detect::parse_facts(&text);
+            let f = detect_facts(&sessions, &id).await?;
             if let Some(cmd) = f.os.unwrap_or(Os::Unknown).no_paging() {
                 let _ = sessions.run_command(&id, cmd, Duration::from_secs(15)).await;
             }
@@ -147,7 +170,7 @@ pub async fn checks_run(
     };
     let os = os.or(facts.os).unwrap_or(Os::Unknown);
     let os = if os == Os::Unknown { Os::Ios } else { os };
-    let commands = checks::commands_for(os, &ids);
+    let commands = checks::commands_for(os, &ids, tier);
     let total = commands.len();
     let mut outputs: Outputs = Outputs::new();
     let mut cancelled = false;
@@ -168,7 +191,7 @@ pub async fn checks_run(
         outputs.insert(command.clone(), result);
     }
     tools.finish(&id);
-    let results = checks::evaluate(os, &ids, &outputs);
+    let results = checks::evaluate(os, &ids, tier, &outputs);
     for r in &results {
         let _ = events.send(CheckProgress::Result { result: r.clone() });
     }
@@ -197,6 +220,7 @@ pub struct CheckInfo {
     pub id: String,
     pub title: String,
     pub category: String,
+    pub quick: bool,
     pub commands: Vec<String>,
 }
 
@@ -205,7 +229,7 @@ pub fn checks_catalog(os: Option<Os>) -> Vec<CheckInfo> {
     let os = os.unwrap_or(Os::Ios);
     checks::catalog()
         .iter()
-        .map(|d| CheckInfo { id: d.id.into(), title: d.title.into(), category: d.category.into(), commands: (d.commands)(os).iter().map(|s| s.to_string()).collect() })
+        .map(|d| CheckInfo { id: d.id.into(), title: d.title.into(), category: d.category.into(), quick: d.quick, commands: checks::commands_of(d, os).iter().map(|s| s.to_string()).collect() })
         .collect()
 }
 
@@ -231,12 +255,13 @@ pub async fn config_backup(
     }
     let mut out = Vec::new();
     for kind in kinds {
-        let command = match (kind.as_str(), os) {
-            ("running", Os::CatOs) | ("startup", Os::CatOs) => "show config",
-            ("running", _) => "show running-config",
-            ("startup", _) => "show startup-config",
-            _ => return Err(format!("unknown config kind {kind}")),
-        };
+        // the platform profile says what each kind is called; "running" and
+        // "startup" fall back to the profile's first (live) and second entries
+        let profile = crate::platforms::profile(os);
+        let picked = profile.configs.iter().find(|c| c.kind == kind)
+            .or_else(|| if kind == "running" { profile.configs.first() } else if kind == "startup" { profile.configs.get(1) } else { None })
+            .ok_or_else(|| format!("{} has no {kind} configuration", os.label()))?;
+        let command = picked.command.as_str();
         let text = sessions.run_command(&id, command, CONFIG_TIMEOUT).await.map_err(err)?;
         if text.trim().is_empty() {
             return Err(format!("`{command}` returned nothing"));

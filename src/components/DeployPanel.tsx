@@ -74,7 +74,8 @@ export function DeployFlow({ sessionId, tabKey, facts, deviceName, site, environ
   const production = environment === "production";
   const name = facts?.hostname || deviceName;
   const kind: Kind = disruptive || items.some((i) => i.kind === "disruptive") ? "disruptive" : items.some((i) => i.kind === "config") ? "config" : "read-only";
-  const canIosSafety = facts?.os === "ios" || facts?.os === "ios-xe";
+  const candidate = facts?.os === "junos" || facts?.os === "eos" || facts?.os === "ios-xr";
+  const canIosSafety = facts?.os === "ios" || facts?.os === "ios-xe" || !facts?.os || candidate;
 
   useEffect(() => {
     void classifyCommands(commands).then(setItems);
@@ -118,7 +119,7 @@ export function DeployFlow({ sessionId, tabKey, facts, deviceName, site, environ
     try {
       const s = await deployFinish(sessionId, facts?.os ?? null, report.safetyReload, save);
       setFinish(s);
-      onToast(save ? "Saved to startup" : report.safetyReload ? "Safety reload cancelled" : "Done");
+      onToast(save ? (report.saveCommand ? "Saved" : "Confirmed") : report.safetyReload ? (report.saveCommand ? "Safety reload cancelled" : "Left to revert") : "Done");
     } catch (e) {
       onToast(String(e));
     } finally {
@@ -130,7 +131,7 @@ export function DeployFlow({ sessionId, tabKey, facts, deviceName, site, environ
     if (!sessionId || !report?.rollbackCommand) return;
     setBusy(true);
     try {
-      const s = await deployRollback(sessionId, report.rollbackCommand);
+      const s = await deployRollback(sessionId, facts?.os ?? null, report.rollbackCommand);
       setFinish((f) => [...(f ?? []), s]);
       void audit(s.ok ? "sent" : "failed", `Rolled back with ${report.rollbackCommand}`, report.backup);
       onToast(s.ok ? "Rolled back" : "Rollback reported a problem, check the output");
@@ -177,12 +178,12 @@ export function DeployFlow({ sessionId, tabKey, facts, deviceName, site, environ
             <>
               {production && isUnlocked(tabKey) && <p className="warn-text">Production unlocked for this tab. <button className="link" onClick={() => lock(tabKey)}>Lock again</button></p>}
               <label className="check"><input type="checkbox" checked={backup} onChange={(e) => setBackup(e.target.checked)} />Back up the running config first</label>
-              <label className="check" title="IOS: copy running-config to flash and offer configure replace. NX-OS: a checkpoint and rollback.">
+              <label className="check" title="IOS: copy running-config to flash and offer configure replace. NX-OS and AOS-CX: a checkpoint. EOS: a saved checkpoint. Junos, IOS-XR and NVUE keep their own history: rollback 1 / the saved startup.">
                 <input type="checkbox" checked={rollbackPoint} onChange={(e) => setRollbackPoint(e.target.checked)} />Save a rollback point on the device
               </label>
               {canIosSafety && (
-                <label className="check" title="reload in N: if you lose access the device reboots to the saved config; cancelled when you confirm the result">
-                  Safety reload
+                <label className="check" title={candidate ? "commit confirmed N: the change reverts on its own unless you confirm it" : "reload in N: if you lose access the device reboots to the saved config; cancelled when you confirm the result"}>
+                  {candidate ? "Timed commit" : "Safety reload"}
                   <select value={safety} onChange={(e) => setSafety(Number(e.target.value))}>
                     <option value={0}>off</option>
                     <option value={10}>in 10 min</option>
@@ -223,10 +224,10 @@ export function DeployFlow({ sessionId, tabKey, facts, deviceName, site, environ
         <div className="confirm">
           {report.failed ? <p className="warn-text">Stopped at line {report.sent + 1}: {report.error}. Nothing after it was sent.</p> : <p>All {report.sent} lines were accepted. Check the verify output above, then:</p>}
           <div className="row">
-            {!report.failed && <button className="btn small primary" disabled={busy} onClick={() => void doFinish(true)}>{report.safetyReload ? "Looks good: cancel the reload and save" : "Looks good: save to startup"}</button>}
-            <button className="btn small" disabled={busy} onClick={() => void doFinish(false)}>{report.safetyReload ? "Cancel the reload, don't save" : "Leave unsaved"}</button>
+            {!report.failed && <button className="btn small primary" disabled={busy} onClick={() => void doFinish(true)}>{report.safetyReload ? (report.saveCommand ? "Looks good: cancel the reload and save" : "Looks good: confirm the commit") : report.saveCommand ? `Looks good: ${report.saveCommand.split("\n")[0]}` : "Looks good"}</button>}
+            <button className="btn small" disabled={busy} onClick={() => void doFinish(false)}>{report.safetyReload ? (report.saveCommand ? "Cancel the reload, don't save" : "Let it revert") : "Leave unsaved"}</button>
             {report.rollbackCommand && <button className="btn small danger" disabled={busy} onClick={() => void doRollback()} title={report.rollbackCommand}>Roll back</button>}
-            {report.safetyReload && <span className="warn-text small">A reload is pending on the device until you choose.</span>}
+            {report.safetyReload && <span className="warn-text small">Pending on the device: {report.pending}.</span>}
           </div>
           {report.backup && <div className="quiet small">Backup: {report.backup}</div>}
         </div>

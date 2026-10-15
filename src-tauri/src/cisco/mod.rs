@@ -5,6 +5,7 @@ pub mod checks;
 pub mod classify;
 pub mod configs;
 pub mod firmware;
+pub mod generic;
 pub mod templates;
 pub mod detect;
 pub mod parse;
