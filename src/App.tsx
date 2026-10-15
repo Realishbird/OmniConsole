@@ -1153,6 +1153,8 @@ export default function App() {
             environment={activeDevice?.environment ?? ""}
             host={activeDevice?.host ?? active?.session.spec.host ?? ""}
             ai={settings.ai}
+            onAiChange={(ai) => setSettings((s) => ({ ...s, ai }))}
+            deviceId={activeDevice?.id ?? ""}
             getSelection={() => active?.session.selection() ?? ""}
             getRecent={() => active?.session.recentOutput(120) ?? ""}
             onOpenSettings={() => setSettingsOpen(true)}

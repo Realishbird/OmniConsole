@@ -636,3 +636,39 @@ button.link { background: none; border: 0; color: var(--accent); cursor: pointer
 .md-h.verified { color: var(--good); }
 .md-h.likely { color: var(--warn); }
 .link { border: 0; background: none; color: var(--accent); cursor: pointer; font: inherit; padding: 0; }
+
+/* assistant: model picker bar, agent steps, built-in models */
+.assistant-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.assistant-bar .model-pick { max-width: 260px; font-size: 12px; padding: 3px 8px; }
+.assistant-bar .btn.on { border-color: var(--accent); color: var(--accent); }
+.steps { display: flex; flex-direction: column; gap: 3px; margin: 0 0 2px; }
+.step { border-left: 2px solid var(--border); padding: 2px 0 2px 10px; font-size: 12.5px; }
+.step.done { border-left-color: var(--good); }
+.step.blocked { border-left-color: var(--warn); }
+.step.failed { border-left-color: var(--bad); }
+.step.running { border-left-color: var(--accent); }
+.step summary { cursor: pointer; display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; color: var(--text-quiet); list-style: none; }
+.step summary::-webkit-details-marker { display: none; }
+.step summary .step-icon { display: inline-block; width: 14px; text-align: center; font-weight: 600; }
+.step.done .step-icon { color: var(--good); }
+.step.blocked .step-icon { color: var(--warn); }
+.step.failed .step-icon { color: var(--bad); }
+.step.running .step-icon { color: var(--accent); }
+.step summary .step-label { color: var(--text); }
+.step summary .step-label > * { display: inline; margin: 0; }
+.step summary .step-label p { display: inline; }
+.step pre { margin: 6px 0 0; max-height: 260px; overflow: auto; }
+.step pre.rejected { border-left: 3px solid var(--bad); }
+.step-note { margin-top: 4px; font-style: italic; }
+.tools-empty.setup { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; text-align: left; }
+.tools-empty.setup .row { flex-wrap: wrap; }
+.download { display: flex; flex-direction: column; gap: 4px; width: 100%; }
+.download progress { width: 100%; height: 6px; accent-color: var(--accent); }
+.models { display: flex; flex-direction: column; gap: 8px; }
+.model-row { display: flex; gap: 10px; align-items: flex-start; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
+.model-row.selected { border-color: var(--accent); }
+.model-main { flex: 1; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.model-main > span { margin-right: 8px; }
+.model-actions { display: flex; gap: 6px; align-items: center; flex: none; }
+.chip { display: inline-block; padding: 0 7px; border-radius: 10px; font-size: 11px; background: color-mix(in srgb, var(--good) 16%, transparent); color: var(--good); margin-right: 8px; }
+.chip.on { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }

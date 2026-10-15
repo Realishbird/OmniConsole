@@ -64,6 +64,17 @@ jobs:
 
       - run: npm ci
 
+      - name: Fetch the built-in model runtime (llama.cpp release)
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # llama-server and its libraries land in src-tauri/binaries/llama and are
+          # bundled as the app's `llama/` resource (see that folder's README.txt)
+          if command -v python3 >/dev/null 2>&1; then py=python3; else py=python; fi
+          $py scripts/fetch-llama.py ${{ matrix.name }} src-tauri/binaries/llama
+          ls -l src-tauri/binaries/llama
+
       - name: Rust tests
         if: matrix.name == 'linux-x64'
         working-directory: src-tauri
