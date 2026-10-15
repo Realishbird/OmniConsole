@@ -110,7 +110,9 @@ Collect gathers evidence; it never changes anything. Pick a **show-command set**
 - Search the newest backup of every device (or every version), plain text or regex.
 
 ### Assistant (Tools → Assistant, `Ctrl/Cmd+Shift+A`)
-- Providers: Ollama or LM Studio on this computer (Qwen3 8B suggested), OpenAI, Anthropic, or any OpenAI-compatible endpoint. API keys live in the keychain.
+- **Built-in models.** The app runs models itself with llama.cpp (bundled, GPU-accelerated: Vulkan on Windows and Linux, Metal on macOS, with a CPU fallback). On first open it detects the GPU and memory, recommends a model and downloads it with one click; more can be added from the list (Qwen3 4B, 8B, 14B and 30B-A3B, or any `.gguf` file of your own). Downloads resume if interrupted and are verified against the publisher's sha256. The model in use is picked from a list in the assistant's header. Nothing leaves the computer.
+- Other providers: Ollama or LM Studio, OpenAI, Anthropic, or any OpenAI-compatible endpoint. API keys live in the keychain.
+- **Works on its own.** The assistant has tools: it runs the read-only commands a question needs, reads the result and keeps going (up to eight rounds), with every step listed in the chat (command, duration, output). It can also run the health checks, read the running, startup or last backed-up configuration, search saved backups, list the inventory and run ping, traceroute, DNS and port checks from this computer. Only read-only commands run this way: anything that would change the device is refused by the classifier and has to come back as a reviewed card. The header button *Runs show commands itself* switches auto-run off per device, after which read-only commands are proposed as cards again. Providers without tool support fall back to proposing commands in cards.
 - Explain selected output, suggest next steps from the latest health check, interpret diagnostics, generate configuration. The detected vendor, model, OS and version are pinned into every request with platform notes (no quoted `| include` patterns on IOS, `show env all` on classic IOS, no interface ranges in show commands), and the latest health check results are included, so the model does not re-collect what the app already knows. Answers separate what the output shows from what the model infers.
 - Proposed commands appear as cards classified **read-only**, **configuration change** or **disruptive**. Read-only cards run on approval; changes need a review checkbox and a second confirmation, take a backup first and write an audit entry; disruptive lines need the device name typed; production devices stay locked until unlocked for that tab.
 - After a card runs, the assistant reads the result on its own: all the output that came back is interpreted, a rejected command gets one corrected replacement, and nothing that already ran is proposed again; up to three rounds. Commands the model gets wrong on the platform are corrected before they reach the card (quoted filters, bare `show memory`, interface ranges). Older proposals are marked superseded when a newer one arrives.
@@ -168,10 +170,11 @@ Ping, traceroute, DNS lookup (any record type, optional server), TCP port check,
 | Passwords, passphrases, API keys | the OS credential store |
 | Session logs | `Documents/OmniConsole/Logs/<date>/` |
 | Config backups, reports, bundles | `Documents/OmniConsole/Configs/` (changeable in Settings) |
+| Downloaded models, the unpacked runtime | the app's local data folder (`%LOCALAPPDATA%\OmniConsole\models`, `~/Library/Application Support/OmniConsole/models`, `~/.local/share/OmniConsole/models`) |
 
 ## Build from source
 
-Node 22+, Rust stable and the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/). On Linux also `libudev-dev` and `libdbus-1-dev`.
+Node 22+, Rust stable and the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/). On Linux also `libudev-dev` and `libdbus-1-dev`. For the built-in models, put llama.cpp's `llama-server` and its libraries in `src-tauri/binaries/llama/` first (`python3 scripts/fetch-llama.py linux-x64 src-tauri/binaries/llama`, with the matrix name for your platform); without them the assistant offers Ollama, LM Studio and cloud providers only.
 
 ```sh
 npm ci
@@ -184,7 +187,8 @@ cd src-tauri && cargo test   # backend tests (parsers, checks, templates, SCP/SF
 
 - **Backend**: Rust with Tauri 2. `session/` holds the SSH (russh), Telnet and serial (serialport) sessions plus the capture-based command runner; `cisco/` the OS detection, parsers, 25 checks (`checks.rs` for Cisco, `generic.rs` for the other vendors), config diffing, command classification, templates and firmware planning; `ai.rs` the providers; `platforms.rs` the per-platform profiles (collections, troubleshooting sets, change workflows); `deploy.rs` the reviewed deployment; `files.rs` SFTP and SCP; `nettools.rs` the workstation tools; `store.rs` devices and the keyring.
 - **Frontend**: React, TypeScript and xterm.js. `App.tsx` owns tabs, panes and shortcuts; `components/ToolsPanel.tsx` the tools sections, each keeping state per console tab.
-- **CI**: `.github/workflows/build.yml` builds all six platforms and runs the backend tests.
+- **Built-in runtime**: `engine.rs` manages llama.cpp's `llama-server` (bundled by CI from the llama.cpp release into the `llama/` resource, see `scripts/fetch-llama.py`), the model catalog, downloads and the loopback port the app talks to; `ai.rs` turns tool calls into each provider's wire format; `src/lib/agent.ts` defines the tools and runs them through the command runner and the classifier.
+- **CI**: `.github/workflows/build.yml` builds all six platforms, fetches the llama.cpp runtime for each, and runs the backend tests.
 
 ## Roadmap
 

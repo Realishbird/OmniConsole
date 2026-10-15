@@ -6,6 +6,7 @@ mod cisco;
 mod commands;
 mod credentials;
 mod deploy;
+mod engine;
 mod files;
 mod ise_api;
 mod launch;
@@ -17,6 +18,7 @@ mod store;
 mod tools;
 
 use session::SessionManager;
+use tauri::Manager;
 
 pub fn run() {
     tauri::Builder::default()
@@ -27,6 +29,7 @@ pub fn run() {
         .manage(tools::ToolState::default())
         .manage(nettools::NetJobs::default())
         .manage(ai::AiJobs::default())
+        .manage(engine::Engine::default())
         .manage(files::FilesState::default())
         .invoke_handler(tauri::generate_handler![
             commands::session_open,
@@ -75,6 +78,13 @@ pub fn run() {
             ai::ai_models,
             ai::ai_chat,
             ai::ai_cancel,
+            engine::local_status,
+            engine::model_download,
+            engine::model_cancel,
+            engine::model_delete,
+            engine::model_add_custom,
+            engine::engine_start,
+            engine::engine_stop,
             deploy::templates_list,
             deploy::template_render,
             deploy::deploy_run,
@@ -115,6 +125,14 @@ pub fn run() {
             launch::launch_external,
             launch::open_window,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running OmniConsole");
+        .build(tauri::generate_context!())
+        .expect("error while building OmniConsole")
+        .run(|app, event| {
+            // the built-in model server must not outlive the app
+            if let tauri::RunEvent::Exit = event {
+                if let Some(engine) = app.try_state::<engine::Engine>() {
+                    engine.shutdown();
+                }
+            }
+        });
 }

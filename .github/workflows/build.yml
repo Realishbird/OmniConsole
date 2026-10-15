@@ -46,7 +46,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev \
             libayatana-appindicator3-dev librsvg2-dev libudev-dev libdbus-1-dev \
-            libssl-dev patchelf xdg-utils
+            libssl-dev patchelf xdg-utils libvulkan1 libvulkan-dev libgomp1
 
       - uses: actions/setup-node@v4
         with:
@@ -63,6 +63,26 @@ jobs:
           key: ${{ matrix.target }}
 
       - run: npm ci
+
+      - name: Fetch the built-in model runtime (llama.cpp release)
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # llama-server and its libraries land in src-tauri/binaries/llama and are
+          # bundled as the app's `llama/` resource (see that folder's README.txt)
+          if command -v python3 >/dev/null 2>&1; then py=python3; else py=python; fi
+          $py scripts/fetch-llama.py ${{ matrix.name }} src-tauri/binaries/llama
+          ls -l src-tauri/binaries/llama
+          # On Linux the runtime's libraries have no rpath, so linuxdeploy cannot resolve
+          # llama-server's dependencies while it builds the AppImage. Point them at their
+          # own folder; this also lets the runtime load without LD_LIBRARY_PATH.
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            for f in src-tauri/binaries/llama/* src-tauri/binaries/llama-cpu/*; do
+              case "$f" in *.txt|*VERSION|*UNAVAILABLE|*LICENSE*) continue;; esac
+              patchelf --set-rpath '$ORIGIN' "$f" && echo "rpath set: $f" || echo "not an ELF file: $f"
+            done
+          fi
 
       - name: Rust tests
         if: matrix.name == 'linux-x64'
@@ -100,9 +120,14 @@ jobs:
 
       - name: Build
         shell: bash
+        env:
+          # linuxdeploy chokes on stripping the bundled llama.cpp libraries
+          NO_STRIP: "true"
         run: |
           args="--target ${{ matrix.target }}"
           if [ -n "${{ matrix.bundles }}" ]; then args="$args --bundles ${{ matrix.bundles }}"; fi
+          # verbose on Linux so a linuxdeploy failure shows its cause in the log
+          if [ "$RUNNER_OS" = "Linux" ]; then args="$args --verbose"; fi
           npx tauri build $args
 
       - name: Name the installers by version and platform

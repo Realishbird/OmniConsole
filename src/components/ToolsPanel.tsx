@@ -39,6 +39,9 @@ interface Props {
   /** the device host, for the workstation tools' default target */
   host: string;
   ai: AiSettings;
+  onAiChange: (ai: AiSettings) => void;
+  /** the saved device behind the active tab, for per-device assistant settings */
+  deviceId: string;
   getSelection: () => string;
   getRecent: () => string;
   onOpenSettings: () => void;
@@ -119,13 +122,16 @@ export default function ToolsPanel(props: Props) {
         <Assistant
           sessionId={sessionId}
           tabKey={tabKey}
+          deviceId={props.deviceId}
           facts={st.facts}
           report={st.report}
+          onReport={(report) => update({ report })}
           hostname={props.hostname}
           deviceName={props.deviceName}
           site={props.site}
           environment={props.environment}
           ai={props.ai}
+          onAiChange={props.onAiChange}
           getSelection={props.getSelection}
           getRecent={props.getRecent}
           onToast={props.onToast}

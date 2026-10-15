@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { loadData, saveData } from "../lib/backend";
 import {
-  aiCancel, aiChat, classifyCommands, commandBlocks, evidenceCheck, normalizeCommand, QUICK_ACTIONS, systemPrompt, userTurn, type AiSettings, type AuditEntry,
-  type ChatMessage, type Classified, type Context, type Kind,
+  aiCancel, aiChat, autoRunFor, builtinProvider, classifyCommands, commandBlocks, evidenceCheck, isLocal, normalizeCommand, QUICK_ACTIONS, systemPrompt, userTurn,
+  type AiSettings, type AuditEntry, type ChatMessage, type Classified, type Context, type Kind, type Provider, type ToolCall,
 } from "../lib/ai";
+import { executeTool, MAX_ROUNDS, TOOLS, type ToolContext } from "../lib/agent";
+import { downloads, formatBytes, localStatus, modelDownload, onDownload, type LocalStatus } from "../lib/local";
 import { isUnlocked, lock, unlock } from "../lib/lock";
 import { backupConfig, runCommand, type CheckReport, type Facts } from "../lib/tools";
 import { CloseIcon, StopIcon } from "./Icons";
@@ -12,13 +14,16 @@ import Markdown from "./Markdown";
 interface Props {
   sessionId: string | null;
   tabKey: string;
+  deviceId: string;
   facts: Facts | null;
   report: CheckReport | null;
+  onReport: (r: CheckReport) => void;
   hostname: string;
   deviceName: string;
   site: string;
   environment: string;
   ai: AiSettings;
+  onAiChange: (ai: AiSettings) => void;
   getSelection: () => string;
   getRecent: () => string;
   onToast: (t: string) => void;
@@ -28,6 +33,18 @@ interface Props {
   onAskConsumed: () => void;
 }
 
+/** One thing the assistant did on its own while answering. */
+interface Step {
+  label: string;
+  status: "running" | "done" | "blocked" | "failed";
+  /** the command running right now */
+  detail: string;
+  outputs: { command: string; output: string; error?: boolean }[];
+  /** text the model wrote before making the call */
+  note: string;
+  ms: number;
+}
+
 interface Turn {
   role: "user" | "assistant";
   content: string;
@@ -35,10 +52,13 @@ interface Turn {
   display?: string;
   /** reviewed command blocks found in an assistant reply */
   blocks?: Review[];
+  steps?: Step[];
   streaming?: boolean;
   redacted?: number;
   /** Verified bullets that quote nothing, or quote text absent from the output the model saw */
   evidence?: { unquoted: string[]; notFound: string[] };
+  /** the full exchange, tool traffic included, for the next question */
+  history?: ChatMessage[];
 }
 
 interface Review {
@@ -54,6 +74,10 @@ interface Review {
 
 interface TabAi {
   turns: Turn[];
+  /** every command sent to the device from this conversation, with its output */
+  seen: Map<string, string>;
+  /** the provider rejected tool definitions once; plain answers from then on */
+  noTools: boolean;
 }
 
 const cache = new Map<string, TabAi>();
@@ -64,18 +88,26 @@ const hasPlaceholder = (c: string) => /<[a-z][\w .\/-]*>/i.test(c);
 const KIND_LABEL: Record<Kind, string> = { "read-only": "read-only", config: "configuration change", disruptive: "disruptive" };
 
 export default function Assistant(props: Props) {
-  const { sessionId, tabKey, facts, report, hostname, deviceName, site, environment, ai, getSelection, getRecent, onToast, onOpenSettings, pendingAsk, onAskConsumed } = props;
+  const { sessionId, tabKey, deviceId, facts, report, onReport, hostname, deviceName, site, environment, ai, onAiChange, getSelection, getRecent, onToast, onOpenSettings, pendingAsk, onAskConsumed } = props;
   const [, setTick] = useState(0);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
+  const stop = useRef(false);
   const [confirming, setConfirming] = useState<{ turn: number; block: number; backup: boolean; reviewed: boolean; typed: string } | null>(null);
   const [unlockTyped, setUnlockTyped] = useState<string | null>(null);
+  const [local, setLocal] = useState<LocalStatus | null>(null);
+  const [downloading, setDownloading] = useState<string | null>(null);
+  const [downloadError, setDownloadError] = useState<string>("");
   const bottom = useRef<HTMLDivElement>(null);
-  if (!cache.has(tabKey)) cache.set(tabKey, { turns: [] });
+  // the download listener outlives renders; it must see the latest settings
+  const aiRef = useRef(ai);
+  aiRef.current = ai;
+  if (!cache.has(tabKey)) cache.set(tabKey, { turns: [], seen: new Map(), noTools: false });
   const st = cache.get(tabKey)!;
   const refresh = () => setTick((t) => t + 1);
   const provider = ai.providers.find((p) => p.id === ai.activeId) ?? ai.providers[0];
   const production = environment === "production";
+  const autoRun = autoRunFor(ai, deviceId);
 
   useEffect(() => {
     bottom.current?.scrollIntoView({ block: "end" });
@@ -89,13 +121,76 @@ export default function Assistant(props: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingAsk]);
 
-  const ctx = (output: string, outputLabel: string): Context => ({ facts, hostname, environment, report, output, outputLabel, settings: ai });
+  // the first-run offer and the model picker need to know what is on disk
+  useEffect(() => {
+    void localStatus().then(setLocal).catch(() => setLocal(null));
+    let off: (() => void) | undefined;
+    void onDownload((e) => {
+      if (e.type === "progress") downloads.set(e.id, { received: e.received, total: e.total, bytesPerSec: e.bytesPerSec });
+      else downloads.delete(e.id);
+      if (e.type === "done") {
+        void localStatus().then(setLocal).catch(() => {});
+        useBuiltin(e.id);
+        setDownloading(null);
+      }
+      if (e.type === "error") {
+        setDownloading(null);
+        setDownloadError(e.message);
+      }
+      if (e.type === "cancelled") setDownloading(null);
+      refresh();
+    }).then((fn) => { off = fn; });
+    return () => off?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /** Make the built-in runtime the active provider with this model. */
+  function useBuiltin(modelId: string) {
+    const cur = aiRef.current;
+    const existing = builtinProvider(cur);
+    const p: Provider = existing ? { ...existing, model: modelId } : { id: crypto.randomUUID(), name: "Built-in", kind: "builtin", baseUrl: "", model: modelId, hasKey: false };
+    const providers = existing ? cur.providers.map((x) => (x.id === p.id ? p : x)) : [...cur.providers, p];
+    onAiChange({ ...cur, providers, activeId: p.id });
+  }
+
+  async function downloadRecommended(id: string) {
+    setDownloadError("");
+    setDownloading(id);
+    try {
+      await modelDownload(id);
+    } catch (e) {
+      if (!/cancelled/.test(String(e))) setDownloadError(String(e));
+      setDownloading(null);
+    }
+  }
+
+  const ctx = (output: string, outputLabel: string): Context => ({ facts, hostname, environment, report, output, outputLabel, settings: ai, agent: !st.noTools, connected: !!sessionId });
 
   /** every command already sent to the device from this conversation (ran or rejected) */
   function alreadyRun(): Set<string> {
-    const seen = new Set<string>();
+    const seen = new Set<string>(st.seen.keys());
     for (const t of st.turns) for (const b of t.blocks ?? []) for (const o of b.outputs) seen.add(o.command.trim().toLowerCase());
     return seen;
+  }
+
+  /** The conversation so far as messages, tool traffic included for recent turns. */
+  function priorHistory(): ChatMessage[] {
+    const done = st.turns.filter((t) => !t.streaming);
+    const recent = done.slice(-12);
+    const out: ChatMessage[] = [];
+    for (const t of recent) {
+      if (t.role === "assistant" && t.history) out.push(...t.history);
+      else out.push({ role: t.role, content: t.content });
+    }
+    // tool traffic from old turns is bulky; keep it only for the last two exchanges
+    const cutoff = Math.max(0, out.length - 24);
+    return out.map((m, i) => {
+      if (m.role !== "tool") return m;
+      if (i < cutoff) return { role: "tool" as const, content: "(earlier output, omitted)", toolCallId: m.toolCallId };
+      // a refusal from when auto-run was off would teach the model to keep proposing
+      if (autoRun && /^Auto-run is off/.test(m.content)) return { role: "tool" as const, content: "(auto-run was off then; it is on now, so call run_show for read-only commands)", toolCallId: m.toolCallId };
+      return m;
+    });
   }
 
   async function ask(question: string, output = "", outputLabel = "Terminal output", depth = 0, display?: string) {
@@ -105,26 +200,90 @@ export default function Assistant(props: Props) {
       return;
     }
     if (busy) return;
+    stop.current = false;
     const c = ctx(output, outputLabel);
     const user: Turn = { role: "user", content: userTurn(question, c), display };
-    const reply: Turn = { role: "assistant", content: "", streaming: true };
+    const reply: Turn = { role: "assistant", content: "", streaming: true, steps: [] };
     st.turns.push(user, reply);
     refresh();
-    const history: ChatMessage[] = [{ role: "system", content: systemPrompt(c) }, ...st.turns.filter((t) => !t.streaming).slice(-12).map((t) => ({ role: t.role, content: t.content }))];
+    const history: ChatMessage[] = [{ role: "system", content: systemPrompt(c) }, ...priorHistory(), { role: "user", content: user.content }];
+    const exchange: ChatMessage[] = [{ role: "user", content: user.content }];
+    const toolCtx: ToolContext = {
+      sessionId, facts, deviceName: facts?.hostname || deviceName, site, ai, autoRun, seen: st.seen,
+      onReport,
+      onProgress: (text) => {
+        const s = reply.steps![reply.steps!.length - 1];
+        if (s) { s.detail = text; refresh(); }
+      },
+    };
     const id = crypto.randomUUID();
     setBusy(id);
+    const shown: string[] = [output];
+    let autoRunBlock: { turn: number; block: number } | null = null;
     try {
-      await aiChat(id, provider, history, (e) => {
-        if (e.type === "token") {
-          reply.content += e.text;
-          refresh();
-        } else if (e.type === "done") {
-          reply.redacted = e.redacted;
+      let tools = st.noTools ? [] : TOOLS;
+      for (let round = 0; round <= MAX_ROUNDS; round++) {
+        if (stop.current) break;
+        // out of rounds: one last call without tools, so the engineer gets an answer
+        const last = round === MAX_ROUNDS;
+        const msgs = last && tools.length ? [...history, { role: "system" as const, content: "You have used every tool call available for this question. Answer now from what you gathered; propose remaining commands in a cli block." }] : history;
+        reply.content = "";
+        const res = await aiChat(id, provider, msgs, last ? [] : tools, (e) => {
+          if (e.type === "token") {
+            reply.content += e.text;
+            refresh();
+          } else if (e.type === "toolCall") {
+            reply.steps!.push({ label: pendingLabel(e.call), status: "running", detail: "", outputs: [], note: "", ms: 0 });
+            refresh();
+          }
+        });
+        if (res.toolsDropped) {
+          st.noTools = true;
+          tools = [];
         }
-      });
+        if (!res.toolCalls.length || stop.current) {
+          reply.redacted = res.redacted;
+          exchange.push({ role: "assistant", content: res.text });
+          break;
+        }
+        const assistantMsg: ChatMessage = { role: "assistant", content: res.text, toolCalls: res.toolCalls };
+        history.push(assistantMsg);
+        exchange.push(assistantMsg);
+        // steps announced during streaming match the calls in order; add any that were not
+        while (reply.steps!.filter((s) => s.status === "running").length < res.toolCalls.length) reply.steps!.push({ label: "", status: "running", detail: "", outputs: [], note: "", ms: 0 });
+        const running = reply.steps!.filter((s) => s.status === "running");
+        for (let i = 0; i < res.toolCalls.length; i++) {
+          const call = res.toolCalls[i];
+          const step = running[i];
+          step.note = i === 0 ? res.text.trim() : "";
+          step.label = step.label || pendingLabel(call);
+          refresh();
+          const started = Date.now();
+          let text: string;
+          try {
+            const out = await executeTool(call, toolCtx);
+            text = out.text;
+            step.label = out.label;
+            step.outputs = out.outputs;
+            step.status = out.blocked ? "blocked" : "done";
+            shown.push(...out.outputs.map((o) => o.output));
+          } catch (e) {
+            text = `The tool failed: ${String(e)}`;
+            step.status = "failed";
+            step.outputs = [{ command: call.name, output: String(e), error: true }];
+          }
+          step.ms = Date.now() - started;
+          step.detail = "";
+          refresh();
+          const toolMsg: ChatMessage = { role: "tool", content: text, toolCallId: call.id };
+          history.push(toolMsg);
+          exchange.push(toolMsg);
+        }
+      }
       reply.streaming = false;
+      reply.history = exchange;
       // tie conclusions to evidence: what the model quoted must exist in what it was shown
-      const shown = [output, ...st.turns.flatMap((t) => (t.blocks ?? []).flatMap((b) => b.outputs.map((o) => o.output))), ...(report ? report.results.flatMap((r) => r.evidence) : [])];
+      shown.push(...st.turns.flatMap((t) => (t.blocks ?? []).flatMap((b) => b.outputs.map((o) => o.output))), ...(report ? report.results.flatMap((r) => r.evidence) : []), ...st.seen.values());
       const ev = evidenceCheck(reply.content, shown);
       if (ev.unquoted.length || ev.notFound.length) reply.evidence = ev;
       const seen = alreadyRun();
@@ -152,14 +311,48 @@ export default function Assistant(props: Props) {
           ? [{ ...readOnly[0], title: readOnly.length === reviews.length ? "" : "Read-only", items: readOnly.flatMap((r) => r.items).filter((it, i, all) => all.findIndex((x) => x.command === it.command) === i) }]
           : readOnly;
         reply.blocks = [...merged, ...reviews.filter((r) => r.kind !== "read-only")];
+        // with auto-run on, a read-only proposal runs at once (some models propose
+        // instead of calling run_show) and the output comes back for interpretation
+        const ro = reply.blocks.findIndex((b) => b.kind === "read-only" && b.state === "proposed");
+        if (autoRun && ro >= 0 && sessionId && depth < 3 && !stop.current && !reply.blocks[ro].items.some((i) => hasPlaceholder(i.command))) {
+          reply.blocks[ro].title = reply.blocks[ro].title || "Ran on its own";
+          autoRunBlock = { turn: st.turns.indexOf(reply), block: ro };
+        }
       }
     } catch (e) {
       reply.streaming = false;
+      reply.history = exchange;
+      for (const s of reply.steps ?? []) if (s.status === "running") s.status = "failed";
       reply.content = reply.content || `Request failed: ${String(e)}`;
     } finally {
       setBusy(null);
       refresh();
     }
+    if (autoRunBlock) await run(autoRunBlock.turn, autoRunBlock.block, false);
+  }
+
+  function pendingLabel(call: ToolCall): string {
+    let a: Record<string, unknown> = {};
+    try { a = JSON.parse(call.arguments || "{}"); } catch { /* shown generically */ }
+    switch (call.name) {
+      case "run_show": {
+        const cmds = Array.isArray(a.commands) ? (a.commands as string[]) : [];
+        return cmds.length === 1 ? `Running \`${cmds[0]}\`` : `Running ${cmds.length || "some"} commands`;
+      }
+      case "health_check": return `Running the ${a.tier === "detailed" ? "detailed" : "quick"} health check`;
+      case "read_config": return `Reading the ${String(a.source ?? "running")} config`;
+      case "search_saved_configs": return `Searching saved configs for "${String(a.query ?? "")}"`;
+      case "list_saved": return "Listing saved backups and captures";
+      case "read_saved": return "Reading a saved file";
+      case "inventory": return "Reading the inventory";
+      case "workstation": return `Running ${String(a.action ?? "a test")} from this computer`;
+      default: return call.name;
+    }
+  }
+
+  function stopNow() {
+    stop.current = true;
+    if (busy) void aiCancel(busy);
   }
 
   function quick(id: string) {
@@ -208,11 +401,13 @@ export default function Assistant(props: Props) {
         try {
           const output = await runCommand(sessionId, command, 120);
           review.outputs.push({ command, output });
+          st.seen.set(command.toLowerCase(), output);
         } catch (e) {
           // a rejected show command is not a reason to skip the rest; a
           // rejected configuration line is, since later lines may depend on it
           const msg = String(e);
           review.outputs.push({ command, output: msg, error: true });
+          st.seen.set(command.toLowerCase(), msg);
           rejected.push(`${command}\n${msg}`);
           if (review.kind !== "read-only" || !/rejected/.test(msg)) throw e;
         } finally {
@@ -261,6 +456,45 @@ export default function Assistant(props: Props) {
     await ask(question, outputsText(review), "Command output", review.depth + 1, display);
   }
 
+  function toggleAutoRun() {
+    if (!deviceId) {
+      onAiChange({ ...ai, autoRun: !autoRun });
+      return;
+    }
+    const off = new Set(ai.autoRunOff ?? []);
+    if (autoRun) off.add(deviceId);
+    else {
+      off.delete(deviceId);
+      if (!(ai.autoRun ?? true)) {
+        onAiChange({ ...ai, autoRun: true, autoRunOff: [...off] });
+        return;
+      }
+    }
+    onAiChange({ ...ai, autoRunOff: [...off] });
+  }
+
+  /** Picker entries: every provider, and one line per downloaded built-in model. */
+  const choices: { value: string; label: string }[] = [];
+  for (const p of ai.providers) {
+    if (p.kind === "builtin") {
+      for (const m of local?.models.filter((m) => m.downloaded) ?? []) choices.push({ value: `builtin:${m.id}`, label: `Built-in · ${m.name}` });
+    } else {
+      choices.push({ value: p.id, label: `${p.name} · ${p.model || "no model"}` });
+    }
+  }
+  if (!builtinProvider(ai)) for (const m of local?.models.filter((m) => m.downloaded) ?? []) choices.push({ value: `builtin:${m.id}`, label: `Built-in · ${m.name}` });
+  const current = provider?.kind === "builtin" ? `builtin:${provider.model}` : provider?.id ?? "";
+  function pick(value: string) {
+    if (value === "__settings") {
+      onOpenSettings();
+      return;
+    }
+    if (value.startsWith("builtin:")) useBuiltin(value.slice("builtin:".length));
+    else onAiChange({ ...ai, activeId: value });
+  }
+
+  const recommended = local?.models.find((m) => m.id === local.recommended);
+  const progress = downloading ? downloads.get(downloading) : undefined;
   const canRun = !!sessionId;
   const quickDisabled = !provider || !!busy;
 
@@ -279,14 +513,22 @@ export default function Assistant(props: Props) {
           )
         )}
       </div>
-      {provider ? (
-        <div className="quiet small">
-          {provider.name} · {provider.model || "no model chosen"}{provider.kind === "ollama" || provider.kind === "lmstudio" ? " · local" : ""} · secrets redacted
-          {!ai.shareOutput && " · output sharing off"}
-        </div>
-      ) : (
-        <div className="tools-note inline">No AI provider yet. <button className="link" onClick={onOpenSettings}>Add one in Settings</button> (Ollama or LM Studio on this computer, or a cloud provider with a key in the keychain).</div>
-      )}
+      <div className="assistant-bar">
+        <select className="model-pick" value={choices.some((c) => c.value === current) ? current : ""} onChange={(e) => pick(e.target.value)} title="Which model answers">
+          {!choices.length && <option value="">no model yet</option>}
+          {choices.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
+          <option value="__settings">Models and providers…</option>
+        </select>
+        {provider && <span className="quiet small">{isLocal(provider) ? "local · nothing leaves this computer" : "cloud · shared output is sent"} · secrets redacted{!ai.shareOutput && " · output sharing off"}</span>}
+        <span className="grow" />
+        <label
+          className="check small auto-run"
+          title={autoRun ? "On: the assistant runs read-only show commands on its own while answering (this device). Untick to have it propose them for you to run." : "Off: read-only commands are proposed as cards for you to run on this device. Tick to let the assistant run them itself."}
+        >
+          <input type="checkbox" checked={autoRun} onChange={toggleAutoRun} />
+          Auto-run show commands
+        </label>
+      </div>
 
       {unlockTyped !== null && (
         <div className="review confirm">
@@ -301,9 +543,35 @@ export default function Assistant(props: Props) {
       )}
 
       <div className="chat">
-        {st.turns.length === 0 && (
+        {st.turns.length === 0 && !provider && (
+          <div className="tools-empty setup">
+            <p className="strong">Set up the assistant</p>
+            {local?.runtime.available ? (
+              <>
+                <p>The app can run a model on this computer; nothing leaves it. Detected: {local.hardware.summary}.</p>
+                {recommended && !downloading && (
+                  <div className="row">
+                    <button className="btn primary" onClick={() => void downloadRecommended(recommended.id)}>Download {recommended.name} ({formatBytes(recommended.sizeBytes)})</button>
+                    <button className="btn" onClick={onOpenSettings}>Other models and cloud providers…</button>
+                  </div>
+                )}
+                {downloading && (
+                  <div className="download">
+                    <div className="row"><span>Downloading {local.models.find((m) => m.id === downloading)?.name}…</span><span className="grow" />{progress && <span className="quiet small">{formatBytes(progress.received)} of {formatBytes(progress.total)} · {formatBytes(progress.bytesPerSec)}/s</span>}</div>
+                    <progress value={progress?.received ?? 0} max={progress?.total || 1} />
+                  </div>
+                )}
+                {downloadError && <p className="warn-text">{downloadError}</p>}
+                <p className="quiet small">{recommended?.blurb} Downloads resume if interrupted and are checked against the publisher's checksum.</p>
+              </>
+            ) : (
+              <p>Add a provider in <button className="link" onClick={onOpenSettings}>Settings → Assistant</button>: Ollama or LM Studio on this computer, or a cloud provider with a key in the keychain.{local?.runtime.note ? ` ${local.runtime.note}` : ""}</p>
+            )}
+          </div>
+        )}
+        {st.turns.length === 0 && provider && (
           <div className="tools-empty">
-            <p>Ask about the device, or select output and choose <em>Explain this output</em>. Proposed commands appear as cards: read-only ones run when you approve, changes need a second confirmation and a backup.</p>
+            <p>Ask about the device, or select output and choose <em>Explain output</em>. {autoRun ? "The assistant runs the read-only commands it needs on its own and shows each step here; configuration changes appear as cards that wait for your approval." : "Proposed commands appear as cards: read-only ones run when you approve, changes need a second confirmation and a backup."}</p>
           </div>
         )}
         {st.turns.map((t, ti) => (
@@ -312,6 +580,23 @@ export default function Assistant(props: Props) {
               t.display ? <div className="user-note">{t.display}</div> : <pre className="user-text">{t.content.split("\n\n")[0]}{t.content.includes("```") ? <span className="quiet"> · with output</span> : ""}</pre>
             ) : (
               <>
+                {t.steps && t.steps.length > 0 && (
+                  <div className="steps">
+                    {t.steps.map((s, si) => (
+                      <details key={si} className={`step ${s.status}`}>
+                        <summary>
+                          <span className="step-icon" aria-hidden="true">{s.status === "running" ? "…" : s.status === "done" ? "✓" : s.status === "blocked" ? "!" : "✗"}</span>
+                          <span className="step-label"><Markdown text={s.label} /></span>
+                          {s.status === "running" && s.detail && <span className="quiet small"> · {s.detail}</span>}
+                          {s.status !== "running" && s.ms > 0 && <span className="quiet small"> · {s.ms >= 1000 ? `${(s.ms / 1000).toFixed(1)} s` : `${s.ms} ms`}</span>}
+                          {s.outputs.length > 0 && <span className="quiet small"> · {s.outputs.reduce((n, o) => n + o.output.split("\n").length, 0)} lines</span>}
+                        </summary>
+                        {s.note && <div className="quiet small step-note">{s.note}</div>}
+                        {s.outputs.map((o, k) => <pre key={k} className={o.error ? "rejected" : ""}>{o.command ? `${o.command}\n` : ""}{o.output || "(no output)"}</pre>)}
+                      </details>
+                    ))}
+                  </div>
+                )}
                 <Markdown text={t.content || (t.streaming ? "…" : "")} hideCommands={!!t.blocks?.length} />
                 {t.redacted ? <div className="quiet small">{t.redacted} secret{t.redacted === 1 ? "" : "s"} redacted before sending</div> : null}
                 {t.evidence && (
@@ -408,7 +693,7 @@ export default function Assistant(props: Props) {
       >
         <textarea
           value={input}
-          placeholder={provider ? "Ask about the device… (selected output is attached)" : "Add a provider in Settings → Assistant"}
+          placeholder={provider ? "Ask about the device… (selected output is attached)" : "Set up a model above or in Settings → Assistant"}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
@@ -420,13 +705,12 @@ export default function Assistant(props: Props) {
           disabled={!provider}
         />
         {busy ? (
-          <button type="button" className="btn" onClick={() => void aiCancel(busy)}><StopIcon /> Stop</button>
+          <button type="button" className="btn" onClick={stopNow}><StopIcon /> Stop</button>
         ) : (
           <button type="submit" className="btn primary" disabled={!provider || !input.trim()}>Ask</button>
         )}
-        {st.turns.length > 0 && !busy && <button type="button" className="btn" title="Clear the conversation" onClick={() => { st.turns = []; refresh(); }}>Clear</button>}
+        {st.turns.length > 0 && !busy && <button type="button" className="btn" title="Clear the conversation" onClick={() => { st.turns = []; st.seen.clear(); refresh(); }}>Clear</button>}
       </form>
     </div>
   );
 }
-

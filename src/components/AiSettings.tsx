@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { deleteSecret, setSecret } from "../lib/backend";
-import { aiModels, newProvider, PROVIDER_DEFAULT_URL, PROVIDER_LABEL, type AiSettings, type Provider, type ProviderKind } from "../lib/ai";
+import { aiModels, builtinProvider, newProvider, PROVIDER_DEFAULT_URL, PROVIDER_LABEL, type AiSettings, type Provider, type ProviderKind } from "../lib/ai";
+import { downloads, engineStop, formatBytes, localStatus, modelAddCustom, modelCancel, modelDelete, modelDownload, onDownload, type LocalStatus } from "../lib/local";
 import { TrashIcon } from "./Icons";
 
 interface Props {
@@ -12,7 +13,73 @@ interface Props {
 export default function AiSettingsSection({ value, onChange }: Props) {
   const [models, setModels] = useState<Record<string, string[] | string>>({});
   const [key, setKey] = useState<Record<string, string>>({});
+  const [local, setLocal] = useState<LocalStatus | null>(null);
+  const [, setTick] = useState(0);
+  const [localError, setLocalError] = useState("");
   const active = value.providers.find((p) => p.id === value.activeId) ?? value.providers[0];
+  const valueRef = useRef(value);
+  valueRef.current = value;
+
+  const reloadLocal = () => localStatus().then(setLocal).catch((e) => setLocalError(String(e)));
+  useEffect(() => {
+    void reloadLocal();
+    let off: (() => void) | undefined;
+    void onDownload((e) => {
+      if (e.type === "progress") downloads.set(e.id, { received: e.received, total: e.total, bytesPerSec: e.bytesPerSec });
+      else downloads.delete(e.id);
+      if (e.type === "done") {
+        void reloadLocal();
+        selectBuiltin(e.id);
+      }
+      if (e.type === "error") setLocalError(e.message);
+      setTick((t) => t + 1);
+    }).then((fn) => { off = fn; });
+    return () => off?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /** Use the built-in runtime with this model (the provider is created on first use). */
+  function selectBuiltin(modelId: string) {
+    const cur = valueRef.current;
+    const existing = builtinProvider(cur);
+    const p: Provider = existing ? { ...existing, model: modelId } : { ...newProvider("builtin"), name: "Built-in", model: modelId };
+    const providers = existing ? cur.providers.map((x) => (x.id === p.id ? p : x)) : [...cur.providers, p];
+    onChange({ ...cur, providers, activeId: p.id });
+  }
+
+  async function download(id: string) {
+    setLocalError("");
+    try {
+      await modelDownload(id);
+    } catch (e) {
+      if (!/cancelled/.test(String(e))) setLocalError(String(e));
+    }
+  }
+
+  async function removeModel(id: string) {
+    setLocalError("");
+    try {
+      await modelDelete(id);
+      await reloadLocal();
+      const b = builtinProvider(value);
+      if (b && b.model === id) onChange({ ...value, providers: value.providers.map((p) => (p.id === b.id ? { ...p, model: "" } : p)) });
+    } catch (e) {
+      setLocalError(String(e));
+    }
+  }
+
+  async function addCustom() {
+    setLocalError("");
+    try {
+      const m = await modelAddCustom();
+      if (m) {
+        await reloadLocal();
+        selectBuiltin(m.id);
+      }
+    } catch (e) {
+      setLocalError(String(e));
+    }
+  }
 
   useEffect(() => {
     if (active && value.activeId !== active.id) onChange({ ...value, activeId: active.id });
@@ -52,9 +119,62 @@ export default function AiSettingsSection({ value, onChange }: Props) {
   }
 
   const needsKey = (k: ProviderKind) => k === "openai" || k === "anthropic";
+  const builtin = builtinProvider(value);
+  const activeModel = builtin && value.activeId === builtin.id ? builtin.model : "";
 
   return (
     <div className="form ai-form">
+      <label>Built-in</label>
+      <div className="models">
+        {local ? (
+          <>
+            <div className="quiet small">{local.runtime.available ? `Runs on this computer with llama.cpp ${local.runtime.version}; nothing leaves it. Detected: ${local.hardware.summary}.` : local.runtime.note}</div>
+            {local.runtime.available && local.models.map((m) => {
+              const p = downloads.get(m.id);
+              const selected = activeModel === m.id;
+              return (
+                <div key={m.id} className={`model-row${selected ? " selected" : ""}`}>
+                  <div className="model-main">
+                    <span className="strong">{m.name}</span>
+                    {m.id === local.recommended && <span className="chip">recommended for this computer</span>}
+                    {selected && <span className="chip on">in use</span>}
+                    <span className="quiet small">{m.custom ? m.path : `${formatBytes(m.sizeBytes)} · needs about ${m.needsGb} GB of GPU memory`}</span>
+                    <div className="quiet small">{m.blurb}</div>
+                    {p && (
+                      <div className="download">
+                        <progress value={p.received} max={p.total || 1} />
+                        <span className="quiet small">{formatBytes(p.received)} of {formatBytes(p.total)} · {formatBytes(p.bytesPerSec)}/s</span>
+                      </div>
+                    )}
+                  </div>
+                  <div className="model-actions">
+                    {p ? (
+                      <button type="button" className="btn small" onClick={() => void modelCancel(m.id)}>Cancel</button>
+                    ) : m.downloaded ? (
+                      <>
+                        {!selected && <button type="button" className="btn small primary" onClick={() => selectBuiltin(m.id)}>Use</button>}
+                        <button type="button" className="icon-btn" title={m.custom ? "Forget this file (it stays on disk)" : "Delete the downloaded file"} onClick={() => void removeModel(m.id)}><TrashIcon /></button>
+                      </>
+                    ) : (
+                      <button type="button" className="btn small" onClick={() => void download(m.id)}>Download</button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+            {local.runtime.available && (
+              <div className="row">
+                <button type="button" className="btn small" onClick={() => void addCustom()}>Add a .gguf file…</button>
+                {local.engine.running && <button type="button" className="btn small" title="Free the GPU memory until the next question" onClick={() => void engineStop().then(reloadLocal)}>Unload the running model</button>}
+                <span className="quiet small">Files live in {local.modelsDir}</span>
+              </div>
+            )}
+            {localError && <div className="hint warn-text">{localError}</div>}
+          </>
+        ) : (
+          <div className="quiet small">{localError || "Checking this computer…"}</div>
+        )}
+      </div>
       <label>Provider</label>
       <div className="row">
         <select value={active?.id ?? ""} onChange={(e) => onChange({ ...value, activeId: e.target.value })}>
@@ -63,10 +183,16 @@ export default function AiSettingsSection({ value, onChange }: Props) {
         </select>
         <select value="" onChange={(e) => e.target.value && add(e.target.value as ProviderKind)} title="Add a provider">
           <option value="">Add…</option>
-          {(Object.keys(PROVIDER_LABEL) as ProviderKind[]).map((k) => <option key={k} value={k}>{PROVIDER_LABEL[k]}</option>)}
+          {(Object.keys(PROVIDER_LABEL) as ProviderKind[]).filter((k) => k !== "builtin").map((k) => <option key={k} value={k}>{PROVIDER_LABEL[k]}</option>)}
         </select>
       </div>
-      {active && (
+      {active && active.kind === "builtin" && (
+        <>
+          <label>Type</label>
+          <div className="quiet">Built-in runtime · model {local?.models.find((m) => m.id === active.model)?.name ?? active.model ?? "not chosen"} · pick another in the list above</div>
+        </>
+      )}
+      {active && active.kind !== "builtin" && (
         <>
           <label>Name</label>
           <div className="row">
@@ -116,7 +242,9 @@ export default function AiSettingsSection({ value, onChange }: Props) {
       <label className="check"><input type="checkbox" checked={value.shareOutput} onChange={(e) => onChange({ ...value, shareOutput: e.target.checked })} />Send terminal output and selections to the assistant</label>
       <label className="check"><input type="checkbox" checked={value.shareConfig} onChange={(e) => onChange({ ...value, shareConfig: e.target.checked })} />Allow configuration text in requests</label>
       <label className="check"><input type="checkbox" checked={value.shareDeviceNames} onChange={(e) => onChange({ ...value, shareDeviceNames: e.target.checked })} />Include device host names</label>
-      <div className="hint">Passwords, secrets, SNMP communities, keys and certificate bodies are always replaced with &lt;removed&gt; before a request leaves the app, whatever the settings above. Local providers (Ollama, LM Studio) keep everything on this computer. Suggested local model: Qwen3 8B.</div>
+      <label>Autonomy</label>
+      <label className="check"><input type="checkbox" checked={value.autoRun ?? true} onChange={(e) => onChange({ ...value, autoRun: e.target.checked })} />Let the assistant run read-only show commands on its own while answering (switch it off per device from the assistant's header)</label>
+      <div className="hint">Passwords, secrets, SNMP communities, keys and certificate bodies are always replaced with &lt;removed&gt; before a request leaves the app, whatever the settings above. The built-in runtime, Ollama and LM Studio keep everything on this computer. Configuration changes always wait for your review, whatever the assistant runs on its own.</div>
     </div>
   );
 }
