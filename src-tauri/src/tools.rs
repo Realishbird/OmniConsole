@@ -102,6 +102,16 @@ async fn detect_facts(sessions: &SessionManager, id: &str) -> CmdResult<Facts> {
             }
         }
     }
+    // AOS-CX keeps the product name and serial in show system
+    if facts.os == Some(Os::ArubaCx) && (facts.model.is_empty() || facts.serial.is_empty()) {
+        if let Ok(sys) = sessions.run_command(id, "show system", COMMAND_TIMEOUT).await {
+            let extra = detect::parse_facts(&format!("ArubaOS-CX\nVersion : {}\n{sys}", facts.version));
+            if facts.model.is_empty() { facts.model = extra.model; }
+            if facts.serial.is_empty() { facts.serial = extra.serial; }
+            if facts.hostname.is_empty() { facts.hostname = extra.hostname; }
+            if facts.uptime.is_empty() { facts.uptime = extra.uptime; }
+        }
+    }
     Ok(facts)
 }
 

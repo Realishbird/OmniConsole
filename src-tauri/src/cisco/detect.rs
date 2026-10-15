@@ -16,8 +16,10 @@ pub enum Os {
     SmallBusiness,
     CatOs,
     /// Aruba / HPE ProCurve switches (ArubaOS-Switch)
+    #[serde(rename = "aos-s")]
     ArubaOsS,
     /// Aruba CX
+    #[serde(rename = "aos-cx")]
     ArubaCx,
     Junos,
     /// Arista EOS
@@ -317,6 +319,14 @@ System serial number            : FOC2222X0AB\n";
     const EOS: &str = "Arista DCS-7050SX3-48YC8-R\nHardware version: 11.00\nSerial number: JPE19283746\nHardware MAC address: 2899.3a1b.2c3d\nSystem MAC address: 2899.3a1b.2c3d\n\nSoftware image version: 4.29.2F\nArchitecture: x86_64\nInternal build version: 4.29.2F-32308478.4292F\nInternal build ID: 1234\nImage format version: 3.0\nImage optimization: Default\n\nUptime: 10 days, 4 hours and 2 minutes\nTotal memory: 8098976 kB\nFree memory: 5560316 kB\n";
     const SONIC: &str = "SONiC Software Version: SONiC.4.3.0-cisco\nSONiC OS Version: 12\nDistribution: Debian 12.1\nKernel: 6.1.0\nBuild commit: 0a1b2c3\nBuild date: Tue Jan 09 2024\nBuilt by: builder\n\nPlatform: x86_64-cisco_8101_32fh_o-r0\nHwSKU: Cisco-8101-O32\nASIC: cisco-8000\nASIC Count: 1\nSerial Number: FLM2740ABCD\nModel Number: 8101-32FH-O\nHardware Revision: 1.0\nUptime: 09:23:11 up 30 days, 2:10, 1 user, load average: 1.20, 1.10, 1.05\n";
     const CUMULUS: &str = "DISTRIB_ID=\"Cumulus Linux\"\nDISTRIB_RELEASE=5.9.0\nDISTRIB_DESCRIPTION=\"Cumulus Linux 5.9.0\"\nNAME=\"Cumulus Linux\"\nVERSION_ID=5.9.0\nID=cumulus-linux\n";
+
+    #[test]
+    fn os_wire_names_match_the_frontend() {
+        assert_eq!(serde_json::to_string(&Os::ArubaCx).unwrap(), "\"aos-cx\"");
+        assert_eq!(serde_json::to_string(&Os::ArubaOsS).unwrap(), "\"aos-s\"");
+        assert_eq!(serde_json::to_string(&Os::IosXe).unwrap(), "\"ios-xe\"");
+        assert_eq!(serde_json::to_string(&Os::SmallBusiness).unwrap(), "\"small-business\"");
+    }
 
     #[test]
     fn detects_other_vendors() {

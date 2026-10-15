@@ -78,7 +78,7 @@ pub fn commands(os: Os, id: &str) -> Vec<&'static str> {
         // ----- Aruba AOS-CX
         ("system", ArubaCx) => vec!["show version", "show system"],
         ("cpu", ArubaCx) => vec!["show system resource-utilization"],
-        ("memory", ArubaCx) => vec!["show system resource-utilization"],
+        ("memory", ArubaCx) => vec!["show system resource-utilization", "show system"],
         ("temperature", ArubaCx) => vec!["show environment temperature"],
         ("power", ArubaCx) => vec!["show environment power-supply"],
         ("fans", ArubaCx) => vec!["show environment fan"],
@@ -241,7 +241,10 @@ pub fn evaluate(os: Os, id: &str, out: &Outputs) -> Verdict {
     match id {
         "system" => system(os, text),
         "cpu" => cpu(text),
-        "memory" => memory(text),
+        "memory" => {
+            let joined: String = commands(os, id).iter().filter_map(|c| out.get(*c).and_then(|r| r.as_ref().ok())).map(|s| s.as_str()).collect::<Vec<_>>().join("\n");
+            memory(&joined)
+        }
         "temperature" => status_from_lines("Temperature", &section(os, id, text, "temp"), &[]),
         "power" => status_from_lines("Power supplies", &section(os, id, text, "power|psu|supply"), &[]),
         "fans" => status_from_lines("Fans", &section(os, id, text, "fan|cooling"), &[]),
@@ -290,7 +293,7 @@ fn system(os: Os, text: &str) -> Verdict {
 }
 
 fn cpu(text: &str) -> Verdict {
-    let busy = pct(text, &[r"(\d+)\s*percent busy", r"CPU usage \(%\)\s*:\s*(\d+)", r"CPU usage\s*:\s*(\d+)", r"CPU utilization\s*:\s*(\d+)%", r"cpu[_ ]usage\s*[:=]?\s*([\d.]+)"]);
+    let busy = pct(text, &[r"(\d+)\s*percent busy", r"CPU usage\s*\(%\)\s*:\s*(\d+)", r"CPU usage\s*:\s*(\d+)", r"CPU utilization\s*:\s*(\d+)%", r"cpu[_ ]usage\s*[:=]?\s*([\d.]+)"]);
     let idle = pct(text, &[r"Idle\s+(\d+) percent", r"([\d.]+)\s*%?\s*id\b", r"([\d.]+)% idle", r"idle\s*[:=]\s*([\d.]+)"]);
     let value = busy.or_else(|| idle.map(|i| 100.0 - i));
     match value {
@@ -300,7 +303,7 @@ fn cpu(text: &str) -> Verdict {
 }
 
 fn memory(text: &str) -> Verdict {
-    if let Some(v) = pct(text, &[r"Memory usage \(%\)\s*:\s*(\d+)", r"Memory utilization\s+(\d+) percent", r"memory[_ ]usage\s*[:=]?\s*([\d.]+)%?"]) {
+    if let Some(v) = pct(text, &[r"Memory usage\s*\(%\)\s*:\s*(\d+)", r"Memory utilization\s+(\d+) percent", r"memory[_ ]usage\s*[:=]?\s*([\d.]+)%?"]) {
         return rate(v, "Memory", 80.0, 90.0, grep(text, "(?i)memory"), &[]);
     }
     // total/free pairs
@@ -354,7 +357,7 @@ fn redundancy(id: &str, text: &str) -> Verdict {
 
 fn interface_errors(text: &str) -> Verdict {
     // "Physical interface: ge-0/0/1" / "GigabitEthernet1/1 ..." style headers, then counter lines
-    let header = re(r"(?i)^(Physical interface:\s*(\S+)|(\S+)\s+is\s+(up|down|administratively)|\s*(swp\d+\S*|eth\d+\S*|Ethernet\d\S*|Et\d\S*|ge-\S+|xe-\S+|et-\S+|\d+/\d+/\d+|\d{1,2})\b)");
+    let header = re(r"(?i)^(Physical interface:\s*(\S+)|(?:Interface\s+)?(\S+)\s+is\s+(up|down|administratively)|\s*(swp\d+\S*|eth\d+\S*|Ethernet\d\S*|Et\d\S*|ge-\S+|xe-\S+|et-\S+|\d+/\d+/\d+|\d{1,2})\b)");
     let counter = re(r"(?i)\b([1-9]\d*)\s+(input errors|output errors|CRC|crc|frame|runts|giants|discards|drops?|errors)\b|\b(input errors|output errors|CRC|FCS|discards?|drops?|errors?)\s*[:=]?\s*([1-9]\d*)\b");
     let mut current = String::new();
     let mut hits: Vec<String> = Vec::new();
@@ -715,6 +718,19 @@ mod tests {
         assert_eq!(v.status, Status::Warning);
         let v = evaluate(Os::Cumulus, "storage", &out("df -h", "Filesystem Size Used Avail Use% Mounted on\n/dev/sda1   7G  6.7G  200M  96% /\ntmpfs       1G    0    1G   0% /run\n"));
         assert_eq!(v.status, Status::Critical);
+    }
+
+    #[test]
+    fn aos_cx_6200_resource_lines() {
+        let v = evaluate(Os::ArubaCx, "cpu", &out("show system resource-utilization", "System Resources:\n  Processes                         : 154\n  CPU usage(%)                      : 5\n  CPU usage(% average over 1 minute): 8\n"));
+        assert_eq!(v.status, Status::Healthy, "{}", v.summary);
+        let mut o = out("show system resource-utilization", "System Resources:\n  CPU usage(%)   : 5\n");
+        o.insert("show system".into(), Ok("Memory usage(%)  : 41\n".into()));
+        let v = evaluate(Os::ArubaCx, "memory", &o);
+        assert_eq!(v.status, Status::Healthy, "{}", v.summary);
+        let v = evaluate(Os::ArubaCx, "interface-errors", &out("show interface", "Interface 1/1/1 is up\n Admin state is up\n Statistics                 RX        TX       Total\n  Packets                   10        20       30\n  CRC/FCS                   35591     n/a      35591\nInterface 1/1/2 is down\n  CRC/FCS                   0         n/a      0\n"));
+        assert_eq!(v.status, Status::Warning);
+        assert!(v.evidence[0].starts_with("1/1/1"), "{:?}", v.evidence);
     }
 
     #[test]
