@@ -37,7 +37,11 @@ CPU_FALLBACK = {
     "linux-x64": [r"bin-ubuntu-x64\.(zip|tar\.gz)$"],
     "linux-arm64": [r"bin-ubuntu-arm64\.(zip|tar\.gz)$"],
 }
-KEEP = re.compile(r"^(llama-server(\.exe)?|.*\.(dll|so|dylib|metal)|.*\.so\.\d+|LICENSE.*)$", re.IGNORECASE)
+KEEP = re.compile(r"^(llama-server(\.exe)?|.*\.(dll|so|dylib|metal)|.*\.so(\.\d+)+|.*(\.\d+)+\.dylib|LICENSE.*)$", re.IGNORECASE)
+# a library name with exactly one version component: libllama.so.0, libllama.0.dylib
+SONAME = re.compile(r"^[^.]+(\.so\.\d+|\.\d+\.dylib)$")
+# a library name with several version components: libllama.so.0.0.7658, libllama.0.0.7658.dylib
+FULLVER = re.compile(r"^[^.]+(\.so(\.\d+){2,}|(\.\d+){2,}\.dylib)$")
 
 
 def api(url):
@@ -80,6 +84,21 @@ def pick(assets, patterns):
     return None
 
 
+def archive_entries(asset, data):
+    """(name, symlink target or None, open-for-read) for every entry in the archive."""
+    if asset["name"].endswith(".zip"):
+        z = zipfile.ZipFile(io.BytesIO(data))
+        return [(i.filename, None, lambda i=i: z.open(i)) for i in z.infolist() if not i.is_dir()]
+    t = tarfile.open(fileobj=io.BytesIO(data), mode="r:gz")
+    out = []
+    for m in t.getmembers():
+        if m.isfile():
+            out.append((m.name, None, lambda m=m: t.extractfile(m)))
+        elif m.issym():
+            out.append((m.name, m.linkname, None))
+    return out
+
+
 def extract(asset, dest):
     data = download(asset["browser_download_url"])
     digest = asset.get("digest") or ""
@@ -90,24 +109,46 @@ def extract(asset, dest):
         print(f"  verified sha256 of {asset['name']}")
     else:
         print(f"  no digest published for {asset['name']}; skipped verification")
-    # (name, open-for-read) pairs for every regular file in the archive
-    if asset["name"].endswith(".zip"):
-        z = zipfile.ZipFile(io.BytesIO(data))
-        entries = [(i.filename, lambda i=i: z.open(i)) for i in z.infolist() if not i.is_dir()]
-    else:
-        t = tarfile.open(fileobj=io.BytesIO(data), mode="r:gz")
-        entries = [(m.name, lambda m=m: t.extractfile(m)) for m in t.getmembers() if m.isfile()]
-    server = [n for n, _ in entries if re.search(r"(^|/)llama-server(\.exe)?$", n)]
+    entries = archive_entries(asset, data)
+    server = [n for n, _, _ in entries if re.search(r"(^|/)llama-server(\.exe)?$", n)]
     if not server:
         sys.exit(f"{asset['name']} has no llama-server")
     folder = server[0].rsplit("/", 1)[0] + "/" if "/" in server[0] else ""
-    os.makedirs(dest, exist_ok=True)
-    kept = 0
-    for name, opener in entries:
+    # the runtime's own folder, flattened: name -> (symlink target, opener)
+    files = {}
+    for name, target, opener in entries:
         if not name.startswith(folder):
             continue
         rel = name[len(folder):]
-        if "/" in rel or not KEEP.match(rel):
+        if "/" not in rel and KEEP.match(rel):
+            files[rel] = (target, opener)
+
+    def opener_for(rel, depth=0):
+        """Follow symlinks (libllama.so.0 -> libllama.so.0.0.7658) to the real file."""
+        target, opener = files.get(rel, (None, None))
+        if opener:
+            return opener
+        if target and depth < 5:
+            return opener_for(target.rsplit("/", 1)[-1], depth + 1)
+        return None
+
+    # The Linux and macOS tarballs ship each library three times: the real file with
+    # a full version, plus symlinks for the soname and the bare name. Loaders look
+    # for the soname (libllama.so.0), so that name is written as a real file and the
+    # other two are dropped; a library without versioned siblings is kept under its
+    # bare name (libggml-cpu-haswell.so, which ggml loads by file name).
+    stems_with_soname = {re.split(r"\.so\.|\.\d", n, 1)[0] for n in files if SONAME.match(n)}
+    os.makedirs(dest, exist_ok=True)
+    kept = 0
+    for rel in sorted(files):
+        if FULLVER.match(rel):
+            continue
+        bare = re.sub(r"\.(so|dylib)$", "", rel)
+        if not SONAME.match(rel) and bare in stems_with_soname and re.search(r"\.(so|dylib)$", rel):
+            continue
+        opener = opener_for(rel)
+        if not opener:
+            print(f"  dangling symlink skipped: {rel}")
             continue
         with opener() as src, open(os.path.join(dest, rel), "wb") as out:
             shutil.copyfileobj(src, out)
