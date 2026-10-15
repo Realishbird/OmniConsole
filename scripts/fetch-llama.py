@@ -18,22 +18,24 @@ import os
 import re
 import shutil
 import sys
+import tarfile
 import urllib.request
 import zipfile
 
 REPO = "ggml-org/llama.cpp"
 
 PREFERENCES = {
-    "windows-x64": [r"bin-win-vulkan-x64\.zip$", r"bin-win-cpu-x64\.zip$", r"bin-win-avx2-x64\.zip$", r"bin-win-x64\.zip$"],
-    "windows-arm64": [r"bin-win-vulkan-arm64\.zip$", r"bin-win-cpu-arm64\.zip$", r"bin-win-llvm-arm64\.zip$", r"bin-win-arm64\.zip$"],
-    "macos-arm64": [r"bin-macos-arm64\.zip$"],
-    "macos-x64": [r"bin-macos-x64\.zip$"],
-    "linux-x64": [r"bin-ubuntu-vulkan-x64\.zip$", r"bin-ubuntu-x64\.zip$"],
-    "linux-arm64": [r"bin-ubuntu-vulkan-arm64\.zip$", r"bin-ubuntu-arm64\.zip$"],
+    "windows-x64": [r"bin-win-vulkan-x64\.(zip|tar\.gz)$", r"bin-win-cpu-x64\.(zip|tar\.gz)$", r"bin-win-avx2-x64\.(zip|tar\.gz)$", r"bin-win-x64\.(zip|tar\.gz)$"],
+    "windows-arm64": [r"bin-win-vulkan-arm64\.(zip|tar\.gz)$", r"bin-win-cpu-arm64\.(zip|tar\.gz)$", r"bin-win-llvm-arm64\.(zip|tar\.gz)$", r"bin-win-arm64\.(zip|tar\.gz)$"],
+    "macos-arm64": [r"bin-macos-arm64\.(zip|tar\.gz)$"],
+    "macos-x64": [r"bin-macos-x64\.(zip|tar\.gz)$"],
+    "linux-x64": [r"bin-ubuntu-vulkan-x64\.(zip|tar\.gz)$", r"bin-ubuntu-x64\.(zip|tar\.gz)$"],
+    "linux-arm64": [r"bin-ubuntu-vulkan-arm64\.(zip|tar\.gz)$", r"bin-ubuntu-arm64\.(zip|tar\.gz)$"],
 }
 CPU_FALLBACK = {
-    "windows-x64": [r"bin-win-cpu-x64\.zip$", r"bin-win-avx2-x64\.zip$"],
-    "linux-x64": [r"bin-ubuntu-x64\.zip$"],
+    "windows-x64": [r"bin-win-cpu-x64\.(zip|tar\.gz)$", r"bin-win-avx2-x64\.(zip|tar\.gz)$"],
+    "linux-x64": [r"bin-ubuntu-x64\.(zip|tar\.gz)$"],
+    "linux-arm64": [r"bin-ubuntu-arm64\.(zip|tar\.gz)$"],
 }
 KEEP = re.compile(r"^(llama-server(\.exe)?|.*\.(dll|so|dylib|metal)|.*\.so\.\d+|LICENSE.*)$", re.IGNORECASE)
 
@@ -88,23 +90,28 @@ def extract(asset, dest):
         print(f"  verified sha256 of {asset['name']}")
     else:
         print(f"  no digest published for {asset['name']}; skipped verification")
-    z = zipfile.ZipFile(io.BytesIO(data))
-    server = [n for n in z.namelist() if re.search(r"(^|/)llama-server(\.exe)?$", n)]
+    # (name, open-for-read) pairs for every regular file in the archive
+    if asset["name"].endswith(".zip"):
+        z = zipfile.ZipFile(io.BytesIO(data))
+        entries = [(i.filename, lambda i=i: z.open(i)) for i in z.infolist() if not i.is_dir()]
+    else:
+        t = tarfile.open(fileobj=io.BytesIO(data), mode="r:gz")
+        entries = [(m.name, lambda m=m: t.extractfile(m)) for m in t.getmembers() if m.isfile()]
+    server = [n for n, _ in entries if re.search(r"(^|/)llama-server(\.exe)?$", n)]
     if not server:
         sys.exit(f"{asset['name']} has no llama-server")
     folder = server[0].rsplit("/", 1)[0] + "/" if "/" in server[0] else ""
     os.makedirs(dest, exist_ok=True)
     kept = 0
-    for info in z.infolist():
-        if info.is_dir() or not info.filename.startswith(folder):
+    for name, opener in entries:
+        if not name.startswith(folder):
             continue
-        rel = info.filename[len(folder):]
+        rel = name[len(folder):]
         if "/" in rel or not KEEP.match(rel):
             continue
-        with z.open(info) as src, open(os.path.join(dest, rel), "wb") as out:
+        with opener() as src, open(os.path.join(dest, rel), "wb") as out:
             shutil.copyfileobj(src, out)
-        if rel.startswith("llama-server"):
-            os.chmod(os.path.join(dest, rel), 0o755)
+        os.chmod(os.path.join(dest, rel), 0o755)
         kept += 1
     print(f"  {kept} files from {asset['name']} -> {dest}")
 
