@@ -6,7 +6,7 @@ Nothing changes a device without you: read-only commands run on approval, config
 
 ## Install
 
-Every push builds installers for all six platforms. Open the latest run under [Actions](https://github.com/Realishbird/OmniConsole/actions), scroll to **Artifacts** and download `OmniConsole-<version>-<platform>`. The file inside is named the same way, so `OmniConsole-0.8.0-windows-x64.msi` is version 0.8.0 for 64-bit Windows. The version goes up with every batch (0.8.0 = batch 8).
+Every push builds installers for all six platforms. Open the latest run under [Actions](https://github.com/Realishbird/OmniConsole/actions), scroll to **Artifacts** and download `OmniConsole-<version>-<platform>`. The file inside is named the same way, so `OmniConsole-0.9.0-windows-x64.msi` is version 0.9.0 for 64-bit Windows. The version goes up with every batch (0.9.0 = batch 9).
 
 | Platform | Artifact | Installer |
 | --- | --- | --- |
@@ -74,6 +74,12 @@ Passwords and key passphrases go in the operating system's credential store (Win
 ### Collect (Tools → Collect)
 Per-platform quick actions: system and inventory, configuration (running, startup, committed, checkpoints), interfaces/counters/errors/optics/PoE, VLANs/trunks/STP/LACP, LLDP/CDP, routing/VRF/OSPF/BGP, stack/VC/VSF/VSX/MLAG, VXLAN/EVPN, logs and environment. Troubleshooting sets for the same areas. Each runs read-only, keeps its output per tab, saves to a text file or goes to the assistant. The **Change workflow** tab shows how this platform enters configuration, commits (Junos `commit confirmed`, EOS sessions, NVUE apply), saves, checkpoints and rolls back.
 
+### Configuration lifecycle (Tools → Configs)
+- **Backups vs captures**: a backup is configuration text the device can take back (marked *restorable* when it is the platform's restorable form, such as `show running-config`); a capture is timestamped show output kept for the record (the folder button on a Collect result). Both live under the device's folder; the list switches between them.
+- **Restore…** on a restorable backup opens the reviewed deploy flow with the backup's lines: classification, production unlock, a fresh backup and rollback point first, then the platform's verify command.
+- **Lifecycle strip** per platform, straight from its profile: *Save config* (`write memory`, `copy running-config startup-config`, `nv config save`, `save config`), *Checkpoint…* (NX-OS, IOS flash copy, AOS-CX, EOS), *Roll back…* (checkpoint rollback, `rollback 1` + commit on Junos, `configure replace`, `nv config apply startup`, IOS-XR `rollback configuration last 1`) and *History* (checkpoint/commit lists). Every action is confirmed first, needs the device name on production, and is written to the audit trail.
+- **Health snapshot before and after** in the deploy flow: the Quick checks run before a change and again when you finish it, and every status that moved is listed next to the result.
+
 ### Config backups (Tools → Configs)
 - Running and startup config to `Documents/OmniConsole/Configs/<site>/<device>/<timestamp>_running.cfg`.
 - Each new backup is diffed against the previous one; diff any two, or a backup against the live config, ignoring timestamps and certificate blocks.
@@ -85,6 +91,9 @@ Per-platform quick actions: system and inventory, configuration (running, startu
 - Proposed commands appear as cards classified **read-only**, **configuration change** or **disruptive**. Read-only cards run on approval; changes need a review checkbox and a second confirmation, take a backup first and write an audit entry; disruptive lines need the device name typed; production devices stay locked until unlocked for that tab.
 - After a card runs, the assistant reads the result on its own: all the output that came back is interpreted, a rejected command gets one corrected replacement, and nothing that already ran is proposed again; up to three rounds. Commands the model gets wrong on the platform are corrected before they reach the card (quoted filters, bare `show memory`, interface ranges). Older proposals are marked superseded when a newer one arrives.
 - Secrets are replaced with `<removed>` before anything leaves the app. Sharing of output, configuration text and device names can each be turned off.
+- **Evidence rules**: every *Verified* bullet must end with the exact output line it rests on; *Likely* bullets are marked as hypotheses with the command that confirms them. After each reply the app checks the quoted lines against the output the model actually saw and flags quotes it cannot find, so a confident-sounding claim without evidence is called out.
+- **Preview and target**: every proposed block shows the device and environment it will run on; nothing runs without approval, and configuration changes need a second confirmation and a backup.
+- **Untrusted output**: device output goes to the model inside `<device-output>` tags marked as data, and the model is told never to follow instructions found inside it.
 
 ### Guided troubleshooting (Tools → Workflows)
 Step-by-step read-only workflows: trace a device by IP or MAC to its port and the neighbor behind it, DHCP, DNS, VLAN, trunking, spanning tree, routing, ACL, wireless, authentication. Each step says what to look for and can be handed to the assistant.

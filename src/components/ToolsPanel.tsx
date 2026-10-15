@@ -3,14 +3,16 @@ import { ChecksIcon, CloseIcon, DiffIcon, FolderIcon, PlayIcon, RefreshIcon, Sav
 import Assistant from "./Assistant";
 import Workstation from "./Workstation";
 import Workflows from "./Workflows";
-import DeployPanel from "./DeployPanel";
+import DeployPanel, { DeployFlow } from "./DeployPanel";
+import { platformProfile, type Profile } from "../lib/platforms";
 import FilesPanel from "./FilesPanel";
 import Collect from "./Collect";
 import type { SessionSpec } from "../lib/terminal";
-import type { AiSettings } from "../lib/ai";
+import type { AiSettings, AuditEntry } from "../lib/ai";
+import { loadData, saveData } from "../lib/backend";
 import {
   backupConfig, bundleFiles, cancelChecks, checksCatalog, compareReports, deleteConfig, detectDevice, diffConfigs, fileStamp,
-  listConfigs, OS_CHOICES, OS_LABEL, openConfigFolder, outputText, readConfig, revealConfig, runChecks, runCommand, saveBundle, saveReport,
+  lifecycleRun, listConfigs, OS_CHOICES, OS_LABEL, openConfigFolder, outputText, readConfig, restorableLines, revealConfig, runChecks, runCommand, saveBundle, saveReport,
   searchConfigs, stamp, STATUS_LABEL, STATUS_ORDER, applyExpectedAps, isWirelessController, mergeApiResults, runIseApiChecks, saveIseApiPassword, type Backup, type Change, type CheckInfo, type CheckProgress, type CheckReport,
   type CheckResult, type DiffResult, type Facts, type Os, type SearchHit, type Status, type Table, type Tier,
 } from "../lib/tools";
@@ -105,7 +107,7 @@ export default function ToolsPanel(props: Props) {
       {section === "checks" && <Checks {...props} st={st} update={update} />}
       {section === "configs" && <Configs {...props} st={st} update={update} />}
       {section === "collect" && (
-        <Collect sessionId={sessionId} tabKey={tabKey} facts={st.facts} onFacts={(facts) => update({ facts })} deviceName={props.deviceName} maskSecrets={props.maskSecrets} onToast={props.onToast} onSend={props.onSend} onAsk={(question, output) => { setPendingAsk({ question, output }); onSection("assistant"); }} />
+        <Collect sessionId={sessionId} tabKey={tabKey} facts={st.facts} onFacts={(facts) => update({ facts })} deviceName={props.deviceName} site={props.site} maskSecrets={props.maskSecrets} onToast={props.onToast} onSend={props.onSend} onAsk={(question, output) => { setPendingAsk({ question, output }); onSection("assistant"); }} />
       )}
       {section === "assistant" && (
         <Assistant
@@ -502,9 +504,64 @@ export function DataTable({ table }: { table: Table }) {
 
 /* ------------------------------------------------------------ configs */
 
-function Configs({ sessionId, deviceName, site, onToast, st, update }: Props & { st: TabTools; update: (p: Partial<TabTools>) => void }) {
+function Configs({ sessionId, tabKey, deviceName, site, environment, onToast, st, update }: Props & { st: TabTools; update: (p: Partial<TabTools>) => void }) {
   const [all, setAll] = useState<Backup[]>([]);
   const [onlyThis, setOnlyThis] = useState(true);
+  const [show, setShow] = useState<"backups" | "captures" | "all">("backups");
+  const [profile, setProfile] = useState<Profile | null>(null);
+  const [lifecycle, setLifecycle] = useState<{ action: string; steps: { command: string; output: string; ok: boolean }[] } | null>(null);
+  const [lifeAsk, setLifeAsk] = useState<{ action: "save" | "checkpoint" | "rollback"; name: string; typed: string } | null>(null);
+  const [restore, setRestore] = useState<{ backup: Backup; lines: string[] } | null>(null);
+  const [checkpoints, setCheckpoints] = useState<string[]>([]);
+
+  useEffect(() => {
+    void platformProfile(st.facts?.os ?? null).then(setProfile).catch(() => setProfile(null));
+  }, [st.facts?.os]);
+  const wf = profile?.workflow;
+  // kinds whose text is the restorable configuration on this platform
+  const restorableKinds = useMemo(() => {
+    if (!profile) return ["running"];
+    const k = profile.configs.filter((c) => c.command === profile.workflow.restorable).map((c) => c.kind);
+    return k.length ? k : [profile.configs[0]?.kind ?? "running"];
+  }, [profile]);
+
+  async function runLifecycle(action: "save" | "checkpoint" | "rollback" | "history", name = "") {
+    if (!sessionId) return;
+    setBusy(action);
+    try {
+      const steps = await lifecycleRun(sessionId, st.facts?.os ?? null, action, name);
+      setLifecycle({ action, steps });
+      if (action === "history") {
+        // checkpoint names for the rollback picker: first word of each listed row that looks like a name
+        const names = steps.flatMap((s) => s.output.split(/\r?\n/)).map((l) => l.trim()).filter((l) => /^[A-Za-z0-9][\w.-]*(\s|$)/.test(l) && !/^(name|id|user|-{3,}|total|checkpoint\s+summary|directory|\d+\s+bytes)/i.test(l)).map((l) => l.split(/\s+/)[0]).filter((n, i, a) => a.indexOf(n) === i);
+        setCheckpoints(names.slice(0, 50));
+      } else {
+        const ok = steps.every((x) => x.ok);
+        onToast(ok ? `${action === "save" ? "Configuration saved" : action === "checkpoint" ? `Checkpoint ${name} created` : "Rolled back"}` : `${action} reported a problem; check the output`);
+        try {
+          const list = ((await loadData<AuditEntry[]>("audit")) ?? []).slice(-5000);
+          list.push({ time: Math.floor(Date.now() / 1000), device: st.facts?.hostname || deviceName, environment, kind: action === "rollback" ? "disruptive" : "config", commands: steps.map((x) => x.command), backup: null, result: ok ? "sent" : "failed", note: `Lifecycle: ${action}${name ? ` ${name}` : ""}` });
+          await saveData("audit", list);
+        } catch {
+          // the audit trail never blocks the work
+        }
+      }
+    } catch (e) {
+      onToast(String(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function openRestore(b: Backup) {
+    try {
+      const lines = restorableLines(await readConfig(b.path));
+      if (!lines.length) return onToast("This backup has no configuration lines to restore");
+      setRestore({ backup: b, lines });
+    } catch (e) {
+      onToast(String(e));
+    }
+  }
   const [busy, setBusy] = useState<string | null>(null);
   const [view, setView] = useState<{ backup: Backup; text: string } | null>(null);
   const [picked, setPicked] = useState<string[]>([]);
@@ -520,7 +577,7 @@ function Configs({ sessionId, deviceName, site, onToast, st, update }: Props & {
   }, []);
   useEffect(refresh, [refresh]);
 
-  const backups = useMemo(() => all.filter((b) => b.kind !== "checks" && (!onlyThis || !deviceName || b.device === safe(deviceName))), [all, onlyThis, deviceName]);
+  const backups = useMemo(() => all.filter((b) => b.kind !== "checks" && (show === "all" || (show === "captures") === b.capture) && (!onlyThis || !deviceName || b.device === safe(deviceName))), [all, onlyThis, deviceName, show]);
 
   async function backup(kinds: string[]) {
     if (!sessionId) return;
@@ -600,6 +657,67 @@ function Configs({ sessionId, deviceName, site, onToast, st, update }: Props & {
         <button className="icon-btn" title="Open the config folder" onClick={() => void openConfigFolder()}><FolderIcon /></button>
       </div>
 
+      {wf && sessionId && (
+        <div className="lifecycle">
+          <span className="quiet small">{profile!.label} lifecycle:</span>
+          {wf.save.length > 0 && <button className="btn small" disabled={!!busy} title={wf.save.join(" ; ")} onClick={() => setLifeAsk({ action: "save", name: "", typed: "" })}>Save config</button>}
+          {wf.checkpoint && <button className="btn small" disabled={!!busy} title={wf.checkpoint} onClick={() => setLifeAsk({ action: "checkpoint", name: `omni-${new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "")}`, typed: "" })}>Checkpoint…</button>}
+          {wf.rollback && <button className="btn small danger" disabled={!!busy} title={wf.rollback} onClick={() => { setLifeAsk({ action: "rollback", name: checkpoints[0] ?? "", typed: "" }); if (wf.history && !checkpoints.length) void runLifecycle("history"); }}>Roll back…</button>}
+          {wf.history && <button className="btn small" disabled={!!busy} title={wf.history} onClick={() => void runLifecycle("history")}>{busy === "history" ? "Reading…" : "History"}</button>}
+          {wf.candidate && <span className="quiet small">commits are persistent; rollback re-applies the previous commit</span>}
+        </div>
+      )}
+      {lifeAsk && (
+        <div className="review confirm lifecycle-ask">
+          <div className="strong">{lifeAsk.action === "save" ? `Save the configuration with ${wf?.save.join(" ; ")}` : lifeAsk.action === "checkpoint" ? "Create a rollback point on the device" : "Roll the device back"}</div>
+          {lifeAsk.action === "checkpoint" && <div className="row"><input value={lifeAsk.name} onChange={(e) => setLifeAsk({ ...lifeAsk, name: e.target.value })} spellCheck={false} placeholder="checkpoint name" /><code className="quiet small">{wf?.checkpoint.replace("{name}", lifeAsk.name || "<name>")}</code></div>}
+          {lifeAsk.action === "rollback" && (
+            <div className="row">
+              {wf?.rollback.includes("{name}") ? (
+                <>
+                  <select value={lifeAsk.name} onChange={(e) => setLifeAsk({ ...lifeAsk, name: e.target.value })}>
+                    <option value="">{checkpoints.length ? "Pick a checkpoint" : "No checkpoints listed (press History)"}</option>
+                    {checkpoints.map((c) => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                  <input value={lifeAsk.name} onChange={(e) => setLifeAsk({ ...lifeAsk, name: e.target.value })} placeholder="or type the name" spellCheck={false} />
+                </>
+              ) : <code>{wf?.rollback}{wf?.candidate ? ` ; ${wf.commit.join(" ; ")}` : ""}</code>}
+            </div>
+          )}
+          <p className="quiet small">{lifeAsk.action === "rollback" ? "The running configuration is replaced on the device. Take a backup first if you have not." : "Runs on the device after you confirm."}</p>
+          {environment === "production" && lifeAsk.action !== "save" && (
+            <div className="row"><span className="warn-text small">Production device: type its name to confirm.</span><input value={lifeAsk.typed} onChange={(e) => setLifeAsk({ ...lifeAsk, typed: e.target.value })} spellCheck={false} /></div>
+          )}
+          <div className="row">
+            <button className="btn small" onClick={() => setLifeAsk(null)}>Cancel</button>
+            <button className={`btn small ${lifeAsk.action === "rollback" ? "danger-fill" : "primary"}`} disabled={!!busy || (lifeAsk.action !== "save" && wf?.[lifeAsk.action === "checkpoint" ? "checkpoint" : "rollback"].includes("{name}") && !lifeAsk.name.trim()) || (environment === "production" && lifeAsk.action !== "save" && lifeAsk.typed.trim() !== (st.facts?.hostname || deviceName))} onClick={() => { const a = lifeAsk; setLifeAsk(null); void runLifecycle(a.action, a.name.trim()); }}>{lifeAsk.action === "save" ? "Save" : lifeAsk.action === "checkpoint" ? "Create checkpoint" : "Roll back now"}</button>
+          </div>
+        </div>
+      )}
+      {lifecycle && (
+        <details className="raw" open>
+          <summary>{lifecycle.action}: {lifecycle.steps.length} command{lifecycle.steps.length === 1 ? "" : "s"}{lifecycle.steps.every((x) => x.ok) ? "" : " · reported a problem"} <button className="link" onClick={(e) => { e.preventDefault(); setLifecycle(null); }}>hide</button></summary>
+          {lifecycle.steps.map((x, i) => <pre key={i} className={x.ok ? "" : "warn-text"}>{`${x.command}\n${x.output || "(no output)"}`}</pre>)}
+        </details>
+      )}
+      {restore && (
+        <DeployFlow
+          sessionId={sessionId}
+          tabKey={tabKey}
+          facts={st.facts}
+          onFacts={(facts) => update({ facts })}
+          deviceName={deviceName}
+          site={site}
+          environment={environment}
+          onToast={onToast}
+          title={`Restore ${restore.backup.kind} backup from ${stamp(restore.backup.timestamp)} (${restore.lines.length} lines)`}
+          commands={restore.lines}
+          verify={wf?.restorable ? [wf.restorable] : []}
+          onClose={() => setRestore(null)}
+          onDone={() => refresh()}
+        />
+      )}
+
       <form className="tools-search" onSubmit={(e) => void search(e)}>
         <input placeholder="Search saved configs (e.g. snmp-server, 10.1.1.)" value={query} onChange={(e) => setQuery(e.target.value)} spellCheck={false} />
         <label className="check" title="Regular expression"><input type="checkbox" checked={regex} onChange={(e) => setRegex(e.target.checked)} />.*</label>
@@ -612,7 +730,7 @@ function Configs({ sessionId, deviceName, site, onToast, st, update }: Props & {
             <button className="icon-btn" title="Clear" onClick={() => setHits(null)}><CloseIcon /></button>
           </div>
           {hits.slice(0, 500).map((h, i) => (
-            <button key={i} className="hit" onClick={() => void readConfig(h.path).then((text) => { setView({ backup: all.find((b) => b.path === h.path) ?? { path: h.path, site: h.site, device: h.device, kind: "running", timestamp: h.timestamp, size: 0 }, text }); setDiff(null); })}>
+            <button key={i} className="hit" onClick={() => void readConfig(h.path).then((text) => { setView({ backup: all.find((b) => b.path === h.path) ?? { path: h.path, site: h.site, device: h.device, kind: "running", timestamp: h.timestamp, size: 0, capture: false }, text }); setDiff(null); })}>
               <span className="quiet">{h.device} · {stamp(h.timestamp)} · line {h.lineNo}</span>
               <code>{h.line}</code>
             </button>
@@ -621,7 +739,11 @@ function Configs({ sessionId, deviceName, site, onToast, st, update }: Props & {
       )}
 
       <div className="tools-list-head">
-        <span>{backups.length} backup{backups.length === 1 ? "" : "s"}</span>
+        <select className="os-pick" value={show} onChange={(e) => setShow(e.target.value as "backups" | "captures" | "all")} title="Backups are configuration text you can restore; captures are timestamped show output kept for the record">
+          <option value="backups">{all.filter((b) => !b.capture && b.kind !== "checks").length} backups</option>
+          <option value="captures">{all.filter((b) => b.capture).length} captures</option>
+          <option value="all">all</option>
+        </select>
         {deviceName && (
           <label className="check"><input type="checkbox" checked={onlyThis} onChange={(e) => setOnlyThis(e.target.checked)} />this device only</label>
         )}
@@ -634,14 +756,15 @@ function Configs({ sessionId, deviceName, site, onToast, st, update }: Props & {
           <div key={b.path} className={`backup${picked.includes(b.path) ? " picked" : ""}${view?.backup.path === b.path ? " viewing" : ""}`}>
             <input type="checkbox" checked={picked.includes(b.path)} onChange={() => pick(b.path)} title="Select for diff" />
             <button className="backup-main" onClick={() => void readConfig(b.path).then((text) => { setView({ backup: b, text }); setDiff(null); }).catch((e) => onToast(String(e)))}>
-              <span className="strong">{b.device}</span>
+              <span className="strong">{b.device}{b.capture ? <span className="cred-badge capture">capture</span> : restorableKinds.includes(b.kind) && (!deviceName || b.device === safe(deviceName)) ? <span className="cred-badge restorable">restorable</span> : null}</span>
               <span className="quiet">{b.site} · {b.kind} · {stamp(b.timestamp)} · {Math.max(1, Math.round(b.size / 1024))} KB</span>
             </button>
+            {!b.capture && restorableKinds.includes(b.kind) && sessionId && (!deviceName || b.device === safe(deviceName)) && <button className="btn small" title="Review and push these configuration lines back to the connected device, with a fresh backup and rollback point first" onClick={() => void openRestore(b)}>Restore…</button>}
             <button className="icon-btn" title="Show in folder" onClick={() => void revealConfig(b.path)}><FolderIcon /></button>
             <button className="icon-btn" title="Delete this backup" onClick={() => { if (window.confirm(`Delete ${label(b)}?`)) void deleteConfig(b.path).then(refresh).catch((e) => onToast(String(e))); }}><TrashIcon /></button>
           </div>
         ))}
-        {backups.length === 0 && <div className="tools-empty"><p>No backups yet. Back up the running config of a connected device; later backups are compared with the previous one automatically.</p></div>}
+        {backups.length === 0 && <div className="tools-empty"><p>{show === "captures" ? "No captures yet. In Collect, the folder button on a result keeps it here as a timestamped capture." : "No backups yet. Back up the running config of a connected device; later backups are compared with the previous one automatically."}</p></div>}
       </div>
 
       {view && (

@@ -28,6 +28,8 @@ export interface Workflow {
   checkpoint: string;
   rollback: string;
   restorable: string;
+  /** lists checkpoints / commits / saved files on the device */
+  history: string;
   notes: string[];
 }
 

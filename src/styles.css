@@ -620,3 +620,17 @@ button.link { background: none; border: 0; color: var(--accent); cursor: pointer
 .cred-default-row { display: grid; grid-template-columns: 1fr auto 240px; gap: 10px; align-items: center; padding: 6px 4px; border-bottom: 1px solid var(--border); }
 .cred-default-row select { height: 28px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font: inherit; font-size: 12px; }
 .ok-text { color: var(--good, #3fb950); }
+
+/* configuration lifecycle and AI evidence (batch 9) */
+.lifecycle { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.lifecycle-ask { gap: 8px; }
+.lifecycle-ask input, .lifecycle-ask select { height: 26px; font: inherit; font-size: 12px; padding: 0 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); }
+.cred-badge.capture { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent); }
+.cred-badge.restorable { background: color-mix(in srgb, var(--good) 18%, transparent); color: var(--good); }
+.snapshot-delta { display: flex; flex-direction: column; gap: 6px; font-size: 12px; }
+.evidence-note { font-size: 11.5px; color: var(--warn); border-left: 3px solid var(--warn); padding: 2px 8px; margin-top: 4px; }
+.target-chip { font-size: 11px; color: var(--text-quiet); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 45%; }
+.target-chip.production { color: var(--bad); }
+.md-h.verified { color: var(--good); }
+.md-h.likely { color: var(--warn); }
+.link { border: 0; background: none; color: var(--accent); cursor: pointer; font: inherit; padding: 0; }

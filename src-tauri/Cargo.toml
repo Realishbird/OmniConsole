@@ -1,6 +1,6 @@
 [package]
 name = "omniconsole"
-version = "0.8.0"
+version = "0.9.0"
 description = "OmniConsole: SSH, Telnet and serial console client for network engineers"
 authors = ["Realishbird"]
 edition = "2021"

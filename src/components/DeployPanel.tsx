@@ -8,7 +8,7 @@ import {
   type DeployReport, type DeployStep, type FirmwareInfo, type Plan, type Template,
 } from "../lib/deploy";
 import { isUnlocked, lock, unlock } from "../lib/lock";
-import { detectDevice, stamp, type Facts } from "../lib/tools";
+import { compareReports, detectDevice, runChecks, stamp, type Change, type CheckReport, type Facts } from "../lib/tools";
 import { CloseIcon, RefreshIcon, SaveIcon } from "./Icons";
 
 export type DeploySection = "templates" | "firmware" | "checklists" | "audit";
@@ -71,6 +71,11 @@ export function DeployFlow({ sessionId, tabKey, facts, deviceName, site, environ
   const [report, setReport] = useState<DeployReport | null>(null);
   const [finish, setFinish] = useState<DeployStep[] | null>(null);
   const [busy, setBusy] = useState(false);
+  // quick health check before and after, so the change is judged by what moved
+  const [snapshot, setSnapshot] = useState(true);
+  const [pre, setPre] = useState<CheckReport | null>(null);
+  const [post, setPost] = useState<{ report: CheckReport; changes: Change[] } | null>(null);
+  const [snapping, setSnapping] = useState<"pre" | "post" | null>(null);
   const production = environment === "production";
   const name = facts?.hostname || deviceName;
   const kind: Kind = disruptive || items.some((i) => i.kind === "disruptive") ? "disruptive" : items.some((i) => i.kind === "config") ? "config" : "read-only";
@@ -91,11 +96,25 @@ export function DeployFlow({ sessionId, tabKey, facts, deviceName, site, environ
     }
   }
 
+  async function takeSnapshot(phase: "pre" | "post") {
+    if (!sessionId) return null;
+    setSnapping(phase);
+    try {
+      return await runChecks(sessionId, facts, [], "quick", () => {}, null);
+    } catch (e) {
+      onToast(`Health snapshot (${phase}) failed: ${e}`);
+      return null;
+    } finally {
+      setSnapping(null);
+    }
+  }
+
   async function run() {
     if (!sessionId) return;
     setBusy(true);
     setSteps([]);
     try {
+      if (snapshot && kind !== "read-only") setPre(await takeSnapshot("pre"));
       const r = await deployRun(sessionId, facts?.os ?? null, site, name, commands, verify, { backup, rollbackPoint, safetyReloadMinutes: safety }, (e) => {
         if (e.type === "step") setProgress({ phase: e.phase, command: e.command, index: e.index, total: e.total });
         else setSteps((s) => [...s, { phase: e.phase, command: e.command, output: e.output, ok: e.ok }]);
@@ -120,6 +139,10 @@ export function DeployFlow({ sessionId, tabKey, facts, deviceName, site, environ
       const s = await deployFinish(sessionId, facts?.os ?? null, report.safetyReload, save);
       setFinish(s);
       onToast(save ? (report.saveCommand ? "Saved" : "Confirmed") : report.safetyReload ? (report.saveCommand ? "Safety reload cancelled" : "Left to revert") : "Done");
+      if (pre) {
+        const after = await takeSnapshot("post");
+        if (after) setPost({ report: after, changes: compareReports(pre, after) });
+      }
     } catch (e) {
       onToast(String(e));
     } finally {
@@ -181,6 +204,9 @@ export function DeployFlow({ sessionId, tabKey, facts, deviceName, site, environ
               <label className="check" title="IOS: copy running-config to flash and offer configure replace. NX-OS and AOS-CX: a checkpoint. EOS: a saved checkpoint. Junos, IOS-XR and NVUE keep their own history: rollback 1 / the saved startup.">
                 <input type="checkbox" checked={rollbackPoint} onChange={(e) => setRollbackPoint(e.target.checked)} />Save a rollback point on the device
               </label>
+              <label className="check" title="Runs the Quick health check before the change and again after you finish it, and lists every status that moved">
+                <input type="checkbox" checked={snapshot} onChange={(e) => setSnapshot(e.target.checked)} />Health snapshot before and after
+              </label>
               {canIosSafety && (
                 <label className="check" title={candidate ? "commit confirmed N: the change reverts on its own unless you confirm it" : "reload in N: if you lose access the device reboots to the saved config; cancelled when you confirm the result"}>
                   {candidate ? "Timed commit" : "Safety reload"}
@@ -233,6 +259,18 @@ export function DeployFlow({ sessionId, tabKey, facts, deviceName, site, environ
         </div>
       )}
       {finish && finish.map((s, i) => <pre key={i} className={s.ok ? "" : "warn-text"}>{`${s.command}\n${s.output}`}</pre>)}
+      {snapping && <div className="quiet small">Taking the {snapping === "pre" ? "pre-change" : "post-change"} health snapshot…</div>}
+      {pre && !post && !snapping && <div className="quiet small">Pre-change snapshot taken {stamp(pre.finished)}: {pre.results.filter((r) => r.status === "critical").length} critical, {pre.results.filter((r) => r.status === "warning").length} warning. The post-change snapshot runs when you finish.</div>}
+      {post && (
+        <div className="snapshot-delta">
+          <div className={post.changes.length ? "warn-text" : "ok-text"}>{post.changes.length ? `${post.changes.length} health status${post.changes.length === 1 ? "" : "es"} changed after this change` : "No health status changed after this change"} <span className="quiet">(pre {stamp(pre!.finished)} → post {stamp(post.report.finished)})</span></div>
+          {post.changes.length > 0 && (
+            <ul className="tools-changes">
+              {post.changes.map((c) => <li key={c.id}><span className={`status-chip ${c.from}`}>{c.from}</span> → <span className={`status-chip ${c.to}`}>{c.to}</span> {c.title}: {c.summary}</li>)}
+            </ul>
+          )}
+        </div>
+      )}
     </div>
   );
 }

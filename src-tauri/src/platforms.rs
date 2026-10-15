@@ -62,6 +62,9 @@ pub struct Workflow {
     pub rollback: String,
     /// the restorable backup is this command's output
     pub restorable: String,
+    /// lists the checkpoints / commits / saved files on the device
+    #[serde(default)]
+    pub history: String,
     pub notes: Vec<String>,
 }
 
@@ -150,7 +153,7 @@ pub fn profile(os: Os) -> Profile {
             ],
             Workflow {
                 candidate: false, enter: v(&["configure"]), exit: v(&["end"]), commit: v(&[]), commit_confirmed: String::new(), confirm: v(&[]),
-                save: v(&["write memory"]), checkpoint: String::new(), rollback: String::new(), restorable: "show running-config".into(),
+                save: v(&["write memory"]), checkpoint: String::new(), rollback: String::new(), restorable: "show running-config".into(), history: "show config files".into(),
                 notes: v(&["AOS-S has no checkpoints: the restorable backup is the running config text, restored with `copy tftp startup-config` or by pasting."]),
             },
             "Aruba AOS-S 16.11 command reference",
@@ -177,7 +180,7 @@ pub fn profile(os: Os) -> Profile {
             ],
             Workflow {
                 candidate: false, enter: v(&["configure terminal"]), exit: v(&["end"]), commit: v(&[]), commit_confirmed: String::new(), confirm: v(&[]),
-                save: v(&["write memory"]), checkpoint: "copy running-config checkpoint {name}".into(), rollback: "checkpoint rollback {name}".into(), restorable: "show running-config".into(),
+                save: v(&["write memory"]), checkpoint: "copy running-config checkpoint {name}".into(), rollback: "checkpoint rollback {name}".into(), restorable: "show running-config".into(), history: "show checkpoint list".into(),
                 notes: v(&["AOS-CX also auto-saves a checkpoint before every change; `checkpoint auto` arms a timed rollback."]),
             },
             "Aruba AOS-CX 10.x command reference (release-specific)",
@@ -204,7 +207,7 @@ pub fn profile(os: Os) -> Profile {
             ],
             Workflow {
                 candidate: true, enter: v(&["configure"]), exit: v(&["exit"]), commit: v(&["commit"]), commit_confirmed: "commit confirmed {m}".into(), confirm: v(&["commit"]),
-                save: v(&[]), checkpoint: String::new(), rollback: "rollback 1".into(), restorable: "show configuration".into(),
+                save: v(&[]), checkpoint: String::new(), rollback: "rollback 1".into(), restorable: "show configuration".into(), history: "show system commit".into(),
                 notes: v(&["Lines are entered in the candidate configuration and nothing is live until `commit`.", "`commit confirmed N` reverts on its own unless confirmed; `rollback 1` + `commit` undoes the last commit."]),
             },
             "Junos CLI user guide; command names are consistent across EX/QFX/MX",
@@ -231,7 +234,7 @@ pub fn profile(os: Os) -> Profile {
             ],
             Workflow {
                 candidate: true, enter: v(&["configure session omni-{name}"]), exit: v(&["end"]), commit: v(&["configure session omni-{name} commit"]), commit_confirmed: "configure session omni-{name} commit timer 00:{m}:00".into(), confirm: v(&["configure session omni-{name} commit"]),
-                save: v(&["write memory"]), checkpoint: "configure checkpoint save {name}".into(), rollback: "configure replace checkpoint:{name}".into(), restorable: "show running-config".into(),
+                save: v(&["write memory"]), checkpoint: "configure checkpoint save {name}".into(), rollback: "configure replace checkpoint:{name}".into(), restorable: "show running-config".into(), history: "show config checkpoints".into(),
                 notes: v(&["Changes go into a configuration session and apply on commit; `commit timer` reverts them unless confirmed."]),
             },
             "Arista EOS CLI reference (4.2x)",
@@ -257,7 +260,7 @@ pub fn profile(os: Os) -> Profile {
             ],
             Workflow {
                 candidate: false, enter: v(&["configure terminal"]), exit: v(&["end"]), commit: v(&[]), commit_confirmed: String::new(), confirm: v(&[]),
-                save: v(&["write memory"]), checkpoint: String::new(), rollback: String::new(), restorable: "show running-configuration".into(),
+                save: v(&["write memory"]), checkpoint: String::new(), rollback: String::new(), restorable: "show running-configuration".into(), history: "".into(),
                 notes: v(&["The Cisco S1 SONiC CLI applies lines as typed; `write memory` persists config_db. There is no checkpoint; restore from the saved config_db."]),
             },
             "Cisco S1 SONiC CLI reference; community SONiC uses `show runningconfiguration all` and `config save -y` instead",
@@ -284,7 +287,7 @@ pub fn profile(os: Os) -> Profile {
             ],
             Workflow {
                 candidate: true, enter: v(&[]), exit: v(&[]), commit: v(&["nv config apply --assume-yes"]), commit_confirmed: String::new(), confirm: v(&[]),
-                save: v(&["nv config save"]), checkpoint: String::new(), rollback: "nv config apply startup --assume-yes".into(), restorable: "nv config show".into(),
+                save: v(&["nv config save"]), checkpoint: String::new(), rollback: "nv config apply startup --assume-yes".into(), restorable: "nv config show".into(), history: "nv config history".into(),
                 notes: v(&["NVUE (5.x): lines are `nv set ...`, nothing is live until `nv config apply`; `nv config save` persists it. Rolling back re-applies the saved startup, so save only after verifying.", "NCLU (3.x/4.x): use `net add ...`, `net commit`, `net rollback last`. Linux files and FRR `vtysh` for anything NVUE does not cover."]),
             },
             "NVIDIA Cumulus Linux command reference (NVUE 5.x; NCLU for 4.x)",
@@ -311,7 +314,7 @@ pub fn profile(os: Os) -> Profile {
             ],
             Workflow {
                 candidate: false, enter: v(&["configure terminal"]), exit: v(&["end"]), commit: v(&[]), commit_confirmed: String::new(), confirm: v(&[]),
-                save: v(&["write memory"]), checkpoint: String::new(), rollback: String::new(), restorable: "show running-config".into(),
+                save: v(&["write memory"]), checkpoint: String::new(), rollback: String::new(), restorable: "show running-config".into(), history: "show repository".into(),
                 notes: v(&["ADE-OS config only covers the appliance (interfaces, NTP, DNS, repositories, logging). Policy lives in the ISE admin UI or ERS/OpenAPI, never in this CLI.", "Services restart with `application stop ise` / `application start ise`; `application reset-config ise` wipes the node. Both wait for review and approval."]),
             },
             "Cisco ISE 3.x CLI reference guide (ADE-OS)",
@@ -338,7 +341,7 @@ pub fn profile(os: Os) -> Profile {
             ],
             Workflow {
                 candidate: false, enter: v(&[]), exit: v(&[]), commit: v(&[]), commit_confirmed: String::new(), confirm: v(&[]),
-                save: v(&["save config"]), checkpoint: String::new(), rollback: String::new(), restorable: "show run-config commands".into(),
+                save: v(&["save config"]), checkpoint: String::new(), rollback: String::new(), restorable: "show run-config commands".into(), history: "show boot".into(),
                 notes: v(&["AireOS has no config mode: `config ...` lines apply immediately and `save config` (answer y) persists them.", "Restore by uploading a saved config over TFTP/FTP (`transfer upload`) and resetting, after approval."]),
             },
             "Cisco Wireless Controller (AireOS 8.10) command reference",
@@ -391,19 +394,19 @@ fn cisco_profile(os: Os) -> (Vec<ConfigKind>, Vec<Collection>, Vec<Collection>, 
     let workflow = match os {
         Os::NxOs => Workflow {
             candidate: false, enter: v(&["configure terminal"]), exit: v(&["end"]), commit: v(&[]), commit_confirmed: String::new(), confirm: v(&[]),
-            save: v(&["copy running-config startup-config"]), checkpoint: "checkpoint {name}".into(), rollback: "rollback running-config checkpoint {name}".into(), restorable: "show running-config".into(), notes: v(&[]),
+            save: v(&["copy running-config startup-config"]), checkpoint: "checkpoint {name}".into(), rollback: "rollback running-config checkpoint {name}".into(), restorable: "show running-config".into(), history: "show checkpoint summary".into(), notes: v(&[]),
         },
         Os::Ios | Os::IosXe => Workflow {
             candidate: false, enter: v(&["configure terminal"]), exit: v(&["end"]), commit: v(&[]), commit_confirmed: String::new(), confirm: v(&[]),
-            save: v(&["write memory"]), checkpoint: "copy running-config flash:{name}.cfg".into(), rollback: "configure replace flash:{name}.cfg force".into(), restorable: "show running-config".into(), notes: v(&["`reload in N` can be armed as a safety net."]),
+            save: v(&["write memory"]), checkpoint: "copy running-config flash:{name}.cfg".into(), rollback: "configure replace flash:{name}.cfg force".into(), restorable: "show running-config".into(), history: "dir flash: | include cfg".into(), notes: v(&["`reload in N` can be armed as a safety net."]),
         },
         Os::IosXr => Workflow {
             candidate: true, enter: v(&["configure"]), exit: v(&["end"]), commit: v(&["commit"]), commit_confirmed: "commit confirmed {m}".into(), confirm: v(&["commit"]),
-            save: v(&[]), checkpoint: String::new(), rollback: "rollback configuration last 1".into(), restorable: "show running-config".into(), notes: v(&[]),
+            save: v(&[]), checkpoint: String::new(), rollback: "rollback configuration last 1".into(), restorable: "show running-config".into(), history: "show configuration commit list 10".into(), notes: v(&[]),
         },
         _ => Workflow {
             candidate: false, enter: v(&["configure terminal"]), exit: v(&["end"]), commit: v(&[]), commit_confirmed: String::new(), confirm: v(&[]),
-            save: v(&["write memory"]), checkpoint: String::new(), rollback: String::new(), restorable: "show running-config".into(), notes: v(&[]),
+            save: v(&["write memory"]), checkpoint: String::new(), rollback: String::new(), restorable: "show running-config".into(), history: "".into(), notes: v(&[]),
         },
     };
     (configs, collections, troubleshooting, workflow, "Cisco IOS / IOS-XE / NX-OS command references")

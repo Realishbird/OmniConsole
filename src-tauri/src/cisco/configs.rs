@@ -21,6 +21,9 @@ pub struct Backup {
     /// unix seconds
     pub timestamp: i64,
     pub size: u64,
+    /// a timestamped capture of show output, as opposed to a configuration backup
+    #[serde(default)]
+    pub capture: bool,
 }
 
 fn safe_name(s: &str) -> String {
@@ -51,15 +54,32 @@ pub fn save(root: &Path, site: &str, device: &str, kind: &str, text: &str) -> Re
         n += 1;
     }
     crate::store::write_atomic(&path, text)?;
-    Ok(Backup { path: path.display().to_string(), site: site.into(), device: device.into(), kind, timestamp: ts, size: text.len() as u64 })
+    Ok(Backup { path: path.display().to_string(), site: site.into(), device: device.into(), kind, timestamp: ts, size: text.len() as u64, capture: false })
 }
 
-fn parse_name(name: &str) -> Option<(i64, String)> {
-    // 2026-10-14_09-30-00_running.cfg  /  ..._running-2.cfg
-    let re = Regex::new(r"^(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})_([a-z]+)(?:-\d+)?\.(cfg|json)$").ok()?;
+/// Write `text` as a timestamped capture (`<stamp>_<kind>.capture.txt`): a
+/// record of what the device showed, kept apart from restorable backups.
+pub fn save_capture(root: &Path, site: &str, device: &str, kind: &str, text: &str) -> Result<Backup> {
+    let kind = safe_name(kind).replace(' ', "-").to_lowercase();
+    let dir = device_dir(root, site, device);
+    fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    let ts = chrono::Utc::now().timestamp();
+    let mut path = dir.join(format!("{}_{kind}.capture.txt", stamp(ts)));
+    let mut n = 1;
+    while path.exists() {
+        path = dir.join(format!("{}_{kind}-{n}.capture.txt", stamp(ts)));
+        n += 1;
+    }
+    crate::store::write_atomic(&path, text)?;
+    Ok(Backup { path: path.display().to_string(), site: site.into(), device: device.into(), kind, timestamp: ts, size: text.len() as u64, capture: true })
+}
+
+fn parse_name(name: &str) -> Option<(i64, String, bool)> {
+    // 2026-10-14_09-30-00_running.cfg  /  ..._running-2.cfg  /  ..._interfaces.capture.txt
+    let re = Regex::new(r"^(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})_([a-z0-9-]+?)(?:-\d+)?\.(cfg|json|capture\.txt)$").ok()?;
     let c = re.captures(name)?;
     let ts = chrono::NaiveDateTime::parse_from_str(&c[1], "%Y-%m-%d_%H-%M-%S").ok()?.and_utc().timestamp();
-    Some((ts, c[2].to_string()))
+    Some((ts, c[2].to_string(), &c[3] == "capture.txt"))
 }
 
 /// Every backup under root, newest first. `device` narrows to one device
@@ -77,7 +97,7 @@ pub fn list(root: &Path, device: Option<&str>) -> Vec<Backup> {
             let Ok(files) = fs::read_dir(dev.path()) else { continue };
             for f in files.flatten().filter(|e| e.path().is_file()) {
                 let name = f.file_name().to_string_lossy().to_string();
-                let Some((timestamp, kind)) = parse_name(&name) else { continue };
+                let Some((timestamp, kind, capture)) = parse_name(&name) else { continue };
                 out.push(Backup {
                     path: f.path().display().to_string(),
                     site: site.file_name().to_string_lossy().to_string(),
@@ -85,6 +105,7 @@ pub fn list(root: &Path, device: Option<&str>) -> Vec<Backup> {
                     kind,
                     timestamp,
                     size: f.metadata().map(|m| m.len()).unwrap_or(0),
+                    capture,
                 });
             }
         }

@@ -130,6 +130,23 @@ export interface Backup {
   kind: string;
   timestamp: number;
   size: number;
+  /** a timestamped capture of show output, not a configuration backup */
+  capture: boolean;
+}
+
+/** Save show output as a timestamped capture next to the device's configs. */
+export const saveCapture = (site: string, device: string, kind: string, text: string) => invoke<Backup>("capture_save", { site, device, kind, text });
+
+/** Configuration lifecycle through the platform profile: save, checkpoint, rollback, history. */
+export const lifecycleRun = (id: string, os: Os | null, action: "save" | "checkpoint" | "rollback" | "history", name = "") =>
+  invoke<{ phase: string; command: string; output: string; ok: boolean }[]>("lifecycle_run", { id, os, action, name });
+
+/** Lines of a saved configuration that can be pasted back: no banners, comments or `end`. */
+export function restorableLines(text: string): string[] {
+  return text
+    .split(/\r?\n/)
+    .map((l) => l.replace(/\s+$/, ""))
+    .filter((l) => l.trim() && !/^(!|#|Building configuration|Current configuration|Using \d+ out of|Last configuration change|NVRAM config last updated|version \d|end$|exit$|boot-start-marker|boot-end-marker|Load for |Time source|No configuration change since)/i.test(l.trim()));
 }
 
 export interface DiffLine {

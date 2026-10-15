@@ -8,7 +8,12 @@ export default function Markdown({ text, hideCommands = false }: { text: string;
   let i = 0;
   let key = 0;
   // a heading is a node with a `heading` mark; empty headings are dropped at the end
-  const heading = (text: string) => { out.push(<div key={key++} className="md-h" data-h="1">{inline(text)}</div>); };
+  const heading = (text: string) => {
+    const t = text.trim().toLowerCase();
+    const cls = t === "verified" ? " verified" : t === "likely" ? " likely" : "";
+    const label = t === "verified" ? "Verified from output" : t === "likely" ? "Likely (hypothesis, not confirmed)" : text;
+    out.push(<div key={key++} className={`md-h${cls}`} data-h="1">{inline(label)}</div>);
+  };
   const code = (tag: string, body: string[]) => {
     const commandish = ["cli", "cisco", "ios", "junos", "eos"].includes(tag) || (["", "text", "bash", "shell", "sh", "console", "plaintext"].includes(tag) && body.some((l) => l.trim()) && body.every((l) => !l.trim() || /^[a-z!#]/i.test(l.trim())));
     if (hideCommands && commandish) {

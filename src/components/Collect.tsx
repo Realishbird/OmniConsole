@@ -2,8 +2,8 @@ import { useEffect, useState } from "react";
 import { saveText } from "../lib/backend";
 import { collectedText, collectRun, platformProfile, type Collected, type Collection, type Profile } from "../lib/platforms";
 import { useTabState } from "../lib/tabstate";
-import { cancelChecks, detectDevice, OS_CHOICES, OS_LABEL, stamp, type Facts, type Os } from "../lib/tools";
-import { PlayIcon, SaveIcon, StopIcon } from "./Icons";
+import { cancelChecks, detectDevice, OS_CHOICES, OS_LABEL, saveCapture, stamp, type Facts, type Os } from "../lib/tools";
+import { FolderIcon, PlayIcon, SaveIcon, StopIcon } from "./Icons";
 
 interface Props {
   sessionId: string | null;
@@ -11,6 +11,7 @@ interface Props {
   facts: Facts | null;
   onFacts: (f: Facts) => void;
   deviceName: string;
+  site: string;
   maskSecrets: boolean;
   onToast: (t: string) => void;
   onSend: (command: string) => void;
@@ -28,7 +29,7 @@ interface State {
 }
 
 /** Quick actions per platform: the read-only command sets of the profile, run and kept per tab. */
-export default function Collect({ sessionId, tabKey, facts, onFacts, deviceName, maskSecrets, onToast, onSend, onAsk }: Props) {
+export default function Collect({ sessionId, tabKey, facts, onFacts, deviceName, site, maskSecrets, onToast, onSend, onAsk }: Props) {
   const [st, update] = useTabState<State>("collect", tabKey, () => ({ os: null, running: null, progress: null, results: {}, open: null, error: null }));
   const [profile, setProfile] = useState<Profile | null>(null);
   const [tab, setTab] = useState<"collections" | "troubleshooting" | "workflow">("collections");
@@ -83,6 +84,15 @@ export default function Collect({ sessionId, tabKey, facts, onFacts, deviceName,
     const name = `${deviceName || "device"}_${c.id}_${new Date(c.finished * 1000).toISOString().replace(/[:T]/g, "-").slice(0, 19)}.txt`;
     const path = await saveText(name, `${c.title} · ${deviceName} · ${stamp(c.finished)}\n\n${collectedText(c)}`, maskSecrets);
     if (path) onToast(`Saved ${path}`);
+  }
+
+  async function capture(c: Collected) {
+    try {
+      const b = await saveCapture(site, facts?.hostname || deviceName || "device", c.id, `${c.title} · ${deviceName} · ${stamp(c.finished)}\n\n${collectedText(c)}`);
+      onToast(`Capture saved with the device's configs (${Math.max(1, Math.round(b.size / 1024))} KB)`);
+    } catch (e) {
+      onToast(String(e));
+    }
   }
 
   const list = tab === "collections" ? profile?.collections ?? [] : tab === "troubleshooting" ? profile?.troubleshooting ?? [] : [];
@@ -143,6 +153,7 @@ export default function Collect({ sessionId, tabKey, facts, onFacts, deviceName,
                           <span className="grow" />
                           <button className="btn small" onClick={() => onAsk(`Interpret this ${c.title.toLowerCase()} collection from the device: what it shows, anything abnormal, and what to check next.`, collectedText(r))}>Ask the assistant</button>
                           <button className="icon-btn" title="Save as a text file" onClick={() => void save(r)}><SaveIcon /></button>
+                          <button className="icon-btn" title="Keep as a timestamped capture next to this device's config backups (Tools → Configs)" onClick={() => void capture(r)}><FolderIcon /></button>
                         </div>
                         {r.outputs.map(([cmd, o]) => (
                           <details key={cmd} className="raw" open={"Err" in o}>

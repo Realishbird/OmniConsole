@@ -284,6 +284,68 @@ async fn finish_step(sessions: &SessionManager, id: &str, cmd: &str) -> DeploySt
     DeployStep { phase: "finish".into(), command: cmd.into(), output: out.as_ref().map(|s| s.clone()).unwrap_or_else(|e| format!("{e:#}")), ok: out.as_ref().is_ok_and(|o| !looks_like_error(o)) }
 }
 
+/// Configuration lifecycle actions straight from the platform profile:
+/// `save` (persist the running config), `checkpoint` (named rollback point),
+/// `rollback` (to a checkpoint or the platform's last-commit rollback) and
+/// `history` (list what is on the device). Only the profile's own commands
+/// run, so the UI cannot smuggle anything else in.
+#[tauri::command]
+pub async fn lifecycle_run(sessions: State<'_, SessionManager>, id: String, os: Option<Os>, action: String, name: String) -> CmdResult<Vec<DeployStep>> {
+    let os = os.unwrap_or(Os::Ios);
+    let wf = platforms::profile(os).workflow;
+    let name = name.trim().to_string();
+    let safe = name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+    let commands: Vec<String> = match action.as_str() {
+        "save" => wf.save.clone(),
+        "checkpoint" => {
+            if wf.checkpoint.is_empty() {
+                return Err(format!("{} has no checkpoint command; its restorable backup is the saved config text", os.label()));
+            }
+            if name.is_empty() || !safe {
+                return Err("checkpoint names use letters, digits, - _ and . only".into());
+            }
+            vec![platforms::fill(&wf.checkpoint, &name, 0)]
+        }
+        "rollback" => {
+            if wf.rollback.is_empty() {
+                return Err(format!("{} has no rollback command; restore from a saved backup instead", os.label()));
+            }
+            if wf.rollback.contains("{name}") && (name.is_empty() || !safe) {
+                return Err("pick the checkpoint to roll back to".into());
+            }
+            let mut v: Vec<String> = platforms::fill(&wf.rollback, &name, 0).lines().map(|l| l.to_string()).collect();
+            // candidate platforms need the rollback committed to take effect
+            if wf.candidate {
+                v.extend(wf.commit.iter().map(|c| platforms::fill(c, &name, 0)));
+            }
+            v
+        }
+        "history" => {
+            if wf.history.is_empty() {
+                return Err(format!("{} keeps no checkpoint list", os.label()));
+            }
+            vec![wf.history.clone()]
+        }
+        _ => return Err(format!("unknown lifecycle action {action}")),
+    };
+    if commands.is_empty() {
+        return Err(format!("{} needs no explicit save: commits are persistent", os.label()));
+    }
+    if let Some(cmd) = os.no_paging() {
+        let _ = sessions.run_command(&id, cmd, Duration::from_secs(15)).await;
+    }
+    let mut steps = Vec::new();
+    for c in commands {
+        let step = finish_step(&sessions, &id, &c).await;
+        let ok = step.ok;
+        steps.push(step);
+        if !ok {
+            break;
+        }
+    }
+    Ok(steps)
+}
+
 /// Run the platform's rollback command(s) from a deployment report.
 #[tauri::command]
 pub async fn deploy_rollback(sessions: State<'_, SessionManager>, id: String, os: Option<Os>, command: String) -> CmdResult<DeployStep> {

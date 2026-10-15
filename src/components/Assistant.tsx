@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { loadData, saveData } from "../lib/backend";
 import {
-  aiCancel, aiChat, classifyCommands, commandBlocks, normalizeCommand, QUICK_ACTIONS, systemPrompt, userTurn, type AiSettings, type AuditEntry,
+  aiCancel, aiChat, classifyCommands, commandBlocks, evidenceCheck, normalizeCommand, QUICK_ACTIONS, systemPrompt, userTurn, type AiSettings, type AuditEntry,
   type ChatMessage, type Classified, type Context, type Kind,
 } from "../lib/ai";
 import { isUnlocked, lock, unlock } from "../lib/lock";
@@ -37,6 +37,8 @@ interface Turn {
   blocks?: Review[];
   streaming?: boolean;
   redacted?: number;
+  /** Verified bullets that quote nothing, or quote text absent from the output the model saw */
+  evidence?: { unquoted: string[]; notFound: string[] };
 }
 
 interface Review {
@@ -121,6 +123,10 @@ export default function Assistant(props: Props) {
         }
       });
       reply.streaming = false;
+      // tie conclusions to evidence: what the model quoted must exist in what it was shown
+      const shown = [output, ...st.turns.flatMap((t) => (t.blocks ?? []).flatMap((b) => b.outputs.map((o) => o.output))), ...(report ? report.results.flatMap((r) => r.evidence) : [])];
+      const ev = evidenceCheck(reply.content, shown);
+      if (ev.unquoted.length || ev.notFound.length) reply.evidence = ev;
       const seen = alreadyRun();
       const blocks = commandBlocks(reply.content)
         .map((b) => ({ ...b, commands: b.commands.map((cmd) => normalizeCommand(cmd, facts?.os ?? null)).filter((cmd, i, all) => all.indexOf(cmd) === i && !seen.has(cmd.toLowerCase())) }))
@@ -308,6 +314,13 @@ export default function Assistant(props: Props) {
               <>
                 <Markdown text={t.content || (t.streaming ? "…" : "")} hideCommands={!!t.blocks?.length} />
                 {t.redacted ? <div className="quiet small">{t.redacted} secret{t.redacted === 1 ? "" : "s"} redacted before sending</div> : null}
+                {t.evidence && (
+                  <div className="evidence-note" title={[...t.evidence.notFound.map((q) => `not in the output: ${q}`), ...t.evidence.unquoted.map((q) => `quotes nothing: ${q}`)].join("\n")}>
+                    {t.evidence.notFound.length > 0 && <span>{t.evidence.notFound.length} "Verified" quote{t.evidence.notFound.length === 1 ? "" : "s"} not found in the output the assistant saw. </span>}
+                    {t.evidence.unquoted.length > 0 && <span>{t.evidence.unquoted.length} "Verified" claim{t.evidence.unquoted.length === 1 ? "" : "s"} quote{t.evidence.unquoted.length === 1 ? "s" : ""} no output line. </span>}
+                    Treat those as hypotheses until you see the lines yourself.
+                  </div>
+                )}
                 {t.blocks?.map((b, bi) => b.state !== "dismissed" && (
                   <div key={bi} className={`review ${b.kind} ${b.state}`}>
                     <div className="review-head">
@@ -315,6 +328,7 @@ export default function Assistant(props: Props) {
                       <span className="strong">{b.title || `${b.items.length} command${b.items.length === 1 ? "" : "s"}`}</span>
                       {b.state === "superseded" && <span className="quiet small">superseded by a newer proposal</span>}
                       <span className="grow" />
+                      {b.state !== "superseded" && <span className={`target-chip${environment === "production" ? " production" : ""}`} title="Where these commands run">→ {facts?.hostname || deviceName || hostname || "this device"}{environment ? ` · ${environment}` : ""}</span>}
                       {b.state === "proposed" && <button className="icon-btn" title="Dismiss" onClick={() => { b.state = "dismissed"; refresh(); }}><CloseIcon /></button>}
                     </div>
                     {b.state !== "superseded" && <ol className="review-lines">

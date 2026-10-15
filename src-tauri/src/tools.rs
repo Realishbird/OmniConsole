@@ -290,6 +290,15 @@ pub async fn config_backup(
     Ok(out)
 }
 
+/// Save show output as a timestamped capture next to the device's configs.
+#[tauri::command]
+pub fn capture_save(app: AppHandle, site: String, device: String, kind: String, text: String) -> CmdResult<Backup> {
+    if text.trim().is_empty() {
+        return Err("nothing to save".into());
+    }
+    configs::save_capture(&config_root(&app), &site, &device, &kind, &text).map_err(err)
+}
+
 /// Save a check report next to the device's configs (a baseline).
 #[tauri::command]
 pub fn report_save(app: AppHandle, site: String, device: String, report: serde_json::Value) -> CmdResult<Backup> {

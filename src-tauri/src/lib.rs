@@ -80,6 +80,8 @@ pub fn run() {
             deploy::deploy_run,
             deploy::deploy_finish,
             deploy::deploy_rollback,
+            deploy::lifecycle_run,
+            tools::capture_save,
             deploy::firmware_inspect,
             deploy::firmware_plan,
             tools::complete,
