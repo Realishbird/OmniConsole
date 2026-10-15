@@ -15,7 +15,9 @@ fn rules() -> &'static [Regex] {
     RULES.get_or_init(|| {
         [
             // enable secret 9 $9$..., username x secret 5 ..., password 7 0822..., NX-OS password 5 $5$...
-            r"(?i)\b(?:password|secret)(?:\s+\d{1,2})?\s+(?P<s>\S+)",
+            // the optional words name the hash type (`secret sha512 $6$`, `password hash`,
+            // `plaintext`) or, on AOS-S, the account (`password manager user-name admin plaintext`)
+            r"(?i)\b(?:password|secret)(?:\s+(?:\d{1,2}|sha512|sha256|sha1|md5|hash|plaintext|encrypted|cleartext|type\s*\d+|manager|operator|all|user-name\s+\S+))*\s+(?P<s>\S+)",
             r"(?i)\bsnmp-server\s+community\s+(?P<s>\S+)",
             r"(?i)\b(?:auth\s+(?:md5|sha\S*)|priv\s+(?:des\S*|3des|aes(?:\s+\d+)?))\s+(?P<s>\S+)",
             r"(?i)\b(?:key-string|wpa-psk\s+(?:ascii|hex)|pre-shared-key(?:\s+(?:local|remote|address\s+\S+(?:\s+\S+)?))?|(?:tacacs-server|radius-server|isakmp)\s+key|message-digest-key\s+\d+\s+md5|authentication-key\s+\d+\s+md5|authentication\s+text)(?:\s+\d)?\s+(?P<s>\S+)",
@@ -87,6 +89,21 @@ pub fn text(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn redacts_typed_secrets() {
+        for (line, leaked) in [
+            ("username admin secret sha512 $6$abc$def", "$6$abc$def"),
+            ("username admin password hash $6$xyz", "$6$xyz"),
+            ("password manager user-name admin plaintext Secret1", "Secret1"),
+            ("username x password 5 $5$salt$hash", "$5$salt$hash"),
+            ("enable secret 9 $9$abc", "$9$abc"),
+        ] {
+            let out = super::line(line);
+            assert!(!out.contains(leaked), "{line} -> {out}");
+            assert!(out.contains(MASK), "{line} -> {out}");
+        }
+    }
 
     #[test]
     fn cisco_secrets() {

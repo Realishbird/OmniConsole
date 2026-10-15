@@ -161,10 +161,10 @@ pub async fn deploy_run(
         lines.extend(wf.enter.iter().map(|e| platforms::fill(e, &name, minutes)));
     }
     lines.extend(commands.iter().cloned());
-    if !already_wrapped {
-        lines.extend(wf.exit.iter().cloned());
-    }
-    // candidate platforms: the commit makes it live; a timed commit reverts unless confirmed
+    // candidate platforms: the commit makes it live; a timed commit reverts unless confirmed.
+    // Junos and IOS-XR commit from inside configuration mode, so the commit
+    // goes before the exit lines; leaving first would prompt about uncommitted
+    // changes and then type `commit` at the operational prompt.
     let mut commit: Vec<String> = Vec::new();
     if wf.candidate {
         if options.safety_reload_minutes > 0 && !wf.commit_confirmed.is_empty() {
@@ -173,7 +173,8 @@ pub async fn deploy_run(
             commit.extend(wf.commit.iter().map(|c| platforms::fill(c, &name, minutes)));
         }
     }
-    let total = lines.len() + commit.len();
+    let exit_lines: Vec<String> = if already_wrapped { Vec::new() } else { wf.exit.clone() };
+    let total = lines.len() + commit.len() + exit_lines.len();
 
     if options.backup {
         let kind = profile.configs.first().cloned().unwrap_or(platforms::ConfigKind { kind: "running".into(), label: "Running configuration".into(), command: wf.restorable.clone() });
@@ -226,6 +227,13 @@ pub async fn deploy_run(
         }
         report.sent += 1;
     }
+    if report.failed {
+        // leave configuration mode so the finish step (reload cancel, save) runs at the exec prompt
+        for command in &exit_lines {
+            let out = sessions.run_command_with(&id, command, Duration::from_secs(60), NO).await.map_err(err);
+            step("send", command, out, &mut report);
+        }
+    }
 
     if !report.failed {
         for (i, command) in commit.iter().enumerate() {
@@ -240,6 +248,17 @@ pub async fn deploy_run(
                 report.safety_reload = true;
                 report.pending = format!("the commit reverts on its own in {minutes} minutes unless confirmed");
             }
+        }
+        for (i, command) in exit_lines.iter().enumerate() {
+            let _ = events.send(DeployEvent::Step { phase: "send".into(), command: command.clone(), index: lines.len() + commit.len() + i, total });
+            // a failed commit must not be discarded by "exit with uncommitted changes? yes"
+            let out = sessions.run_command_with(&id, command, Duration::from_secs(60), if report.failed { NO } else { YES }).await.map_err(err);
+            step("send", command, out, &mut report);
+        }
+    } else {
+        for command in &exit_lines {
+            let out = sessions.run_command_with(&id, command, Duration::from_secs(60), NO).await.map_err(err);
+            step("send", command, out, &mut report);
         }
     }
 

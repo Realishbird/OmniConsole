@@ -120,6 +120,10 @@ async fn keyboard_interactive(
     password: &str,
 ) -> Result<bool> {
     let mut reply = session.authenticate_keyboard_interactive_start(user, None).await?;
+    // the password is offered once: a device that asks for it again inside the
+    // same exchange (IOS, TACACS+) has rejected it, and re-sending the same
+    // value three times would only burn lockout attempts
+    let mut password_sent = false;
     for _ in 0..8 {
         match reply {
             KeyboardInteractiveAuthResponse::Success => return Ok(true),
@@ -128,6 +132,10 @@ async fn keyboard_interactive(
                 let mut answers = Vec::with_capacity(prompts.len());
                 for p in prompts {
                     if !p.echo {
+                        if password_sent {
+                            return Ok(false);
+                        }
+                        password_sent = true;
                         answers.push(password.to_string());
                     } else {
                         match io.ask("keyboard", p.prompt.clone(), None, true).await {

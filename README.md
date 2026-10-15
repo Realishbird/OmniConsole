@@ -33,6 +33,10 @@ If you have an Apple Developer account, the build signs and notarizes the app it
 
 Health checks and collections on Cumulus Linux and SONiC run their privileged commands as `sudo -n`. If your login has no passwordless sudo, the command is retried without sudo, and only when that also fails does the check say it needs root. Nothing ever answers a password prompt on your behalf: a command that asks for one is aborted (Ctrl-C) and reported, so the next command is never typed into a password field. To get the full set of checks, give the account a `NOPASSWD` sudoers rule or use the built-in `cumulus` user.
 
+## Cisco ISE
+
+ISE's ADE-OS CLI has no `terminal length`, so every ISE probe carries `| nomore`; logs come from `show logging system messages tail count N`. A probe that ISE answers with `syntax error` is reported as rejected rather than parsed as output.
+
 ## Getting started
 
 1. **Add a device** (sidebar `+`, or the palette) with its protocol, address, login and where it lives: customer, site, building, rack, role, environment, tags.

@@ -46,12 +46,13 @@ impl Capture {
 /// ASA `fw/pri/act#`; also plain shells ending in `$`.
 pub fn prompt_regex() -> &'static Regex {
     static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"(?m)^[A-Za-z0-9][\w.\-/:@~]{0,62}(?:\([\w\-.]+\))?[#>$] ?$").unwrap())
+    // also AireOS "(Cisco Controller) >" and ArubaOS "(wlc1) [mynode] #"
+    RE.get_or_init(|| Regex::new(r"(?m)^(?:\([^()\n]{1,40}\) ?(?:\[[^\]\n]{1,24}\] ?)?|[A-Za-z0-9][\w.\-/:@~]{0,62}(?:\([\w\-.]+\))?)[#>$] ?$").unwrap())
 }
 
 fn more_regex() -> &'static Regex {
     static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"(?i)-+ ?\(?more(?: \d+%)?\)? ?-+\s*$|<--- More --->\s*$|Press any key to continue|lines \d+-\d+(?:/\d+)?(?: \(END\))?\s*$").unwrap())
+    RE.get_or_init(|| Regex::new(r"(?i)-+ ?\(?more(?: \d+%)?\)? ?-+(?: or \(q\)uit)?\s*$|<--- More --->\s*$|Press any key to continue|lines \d+-\d+(?:/\d+)?(?: \(END\))?\s*$|(?:^|\n):$").unwrap())
 }
 
 /// A `less`-style pager that reached the end of the output and waits for `q`
@@ -114,6 +115,21 @@ pub fn clean(raw: &str) -> String {
     static MORE_LINE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
     let more_line = MORE_LINE.get_or_init(|| Regex::new(r"(?m)^\s*-+ ?\(?[Mm]ore(?: \d+%)?\)? ?-+\s*$\n?|^<--- More --->\s*$\n?|^\s*(?:lines \d+-\d+(?:/\d+)? ?)?\(END\)\s*$\n?|^\s*lines \d+-\d+(?:/\d+)?\s*$\n?").unwrap());
     more_line.replace_all(&out, "").into_owned()
+}
+
+/// The line a device prints when it did not understand the command, if any:
+/// Cisco `% Invalid input`, ADE-OS and Junos `syntax error`, Aruba `Invalid
+/// input:`, a Linux shell's `command not found`. Only the first lines after
+/// the echo count, so a log line quoting an error is not a rejection.
+pub fn rejection(text: &str, command: &str) -> Option<String> {
+    let body = trim_echo_and_prompt(text, command);
+    body.lines().map(str::trim).filter(|l| !l.is_empty()).take(3).find(|l| {
+        l.starts_with("% Invalid input") || l.starts_with("% Incomplete command") || l.starts_with("% Ambiguous command")
+            || l.starts_with("% Unknown command") || l.starts_with("% Unrecognized command") || l.starts_with("% Bad IP address")
+            || l.starts_with("syntax error") || l.starts_with("Invalid input:") || l.starts_with("Invalid command")
+            || l.starts_with("Unknown command") || l.starts_with("Error: Unrecognized command")
+            || l.ends_with(": command not found") || l.ends_with(": not found") || l.starts_with("ERROR: % Invalid")
+    }).map(|l| l.to_string())
 }
 
 /// Strip the echoed command from the top and the prompt from the bottom.
@@ -229,7 +245,8 @@ impl Runner<'_> {
                 // no prompt seen but the device went quiet (a prompt we do not recognize)
                 let tail = strip_controls(&text);
                 let last = tail.lines().last().unwrap_or("").trim_end();
-                if tail.trim_end().ends_with(['#', '>', '$', ':']) && !password_regex().is_match(last) {
+                // a bare ":" is less waiting mid-file, not a prompt
+                if tail.trim_end().ends_with(['#', '>', '$', ':']) && !password_regex().is_match(last) && last != ":" {
                     break Ok(());
                 }
             }
@@ -241,7 +258,7 @@ impl Runner<'_> {
         let raw = String::from_utf8_lossy(&self.capture.stop()).into_owned();
         result?;
         let text = clean(&raw);
-        if let Some(line) = text.lines().map(str::trim).find(|l| l.starts_with("% Invalid input") || l.starts_with("% Incomplete command") || l.starts_with("% Ambiguous command") || l.starts_with("% Unknown command") || l.starts_with("% Unrecognized command")) {
+        if let Some(line) = rejection(&text, command) {
             bail!("the device rejected `{command}`: {line}");
         }
         Ok(trim_echo_and_prompt(&text, command))
@@ -262,7 +279,7 @@ mod tests {
 
     #[test]
     fn prompt_shapes() {
-        for p in ["sw1#", "sw1>", "sw1(config-if)#", "RP/0/RSP0/CPU0:asr9k#", "fw/pri/act# ", "SG350#"] {
+        for p in ["sw1#", "sw1>", "sw1(config-if)#", "RP/0/RSP0/CPU0:asr9k#", "fw/pri/act# ", "SG350#", "(Cisco Controller) >", "(wlc1) [mynode] #", "ISE-01/admin#", "ddougherty@SN2010-1:mgmt:~$"] {
             assert!(prompt_regex().is_match(p), "{p}");
         }
         for p in ["Password:", "Building configuration...", "% Invalid input detected at '^' marker."] {
@@ -276,6 +293,9 @@ mod tests {
             assert!(more_regex().is_match(p) || end_regex().is_match(p), "{p}");
         }
         assert!(end_regex().is_match("(END)"));
+        assert!(more_regex().is_match("--More-- or (q)uit"));
+        assert!(more_regex().is_match("some output\n:"));
+        assert!(!more_regex().is_match("Reference ID    : 00000000"));
         assert!(!end_regex().is_match("Line protocol is up (END)x"));
         for p in ["[sudo] password for cumulus:", "Password:", "admin@10.0.0.1's password: ", "Enter passphrase for key '/home/x/.ssh/id_rsa':"] {
             assert!(password_regex().is_match(p), "{p}");
@@ -325,6 +345,19 @@ mod tests {
         feeder.await.unwrap();
         assert!(sent.lock().unwrap().iter().any(|b| b == b"q"), "q sent");
         assert_eq!(out, "line one\nline two");
+    }
+
+    #[test]
+    fn rejections_from_other_oses() {
+        let ise = "show logging system | last 5\n-------------------------------^\nsyntax error: expecting\n  begin   - Begin with the line that matches\nISE-01/admin#";
+        assert!(rejection(ise, "show logging system | last 5").unwrap().starts_with("syntax error"));
+        let bash = "sudo smonctl\n-bash: sudo: command not found\nuser@leaf01:mgmt:~$";
+        assert!(rejection(bash, "sudo smonctl").is_some());
+        let cisco = "show foo\n% Invalid input detected at '^' marker.\nsw1#";
+        assert!(rejection(cisco, "show foo").is_some());
+        // a log line quoting an error deeper in the output is not a rejection
+        let log = "show logging\nline 1\nline 2\nline 3\nOct 1 syntax error: in a log line\nsw1#";
+        assert!(rejection(log, "show logging").is_none());
     }
 
     #[test]

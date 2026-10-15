@@ -160,8 +160,7 @@ pub fn sudo_refused(text: &str) -> bool {
 /// What a privileged tool says when run by an ordinary user.
 pub fn root_required(text: &str) -> bool {
     let t = text.to_lowercase();
-    ["permission denied", "operation not permitted", "must be root", "are you root", "run as root", "only root", "need to be root", "requires root", "superuser"].iter().any(|m| t.contains(m))
-        || t.trim().is_empty()
+    ["permission denied", "operation not permitted", "must be root", "are you root", "run as root", "only root", "need to be root", "requires root", "superuser", "privileged user"].iter().any(|m| t.contains(m))
 }
 
 /// `show version`, then turn the pager off for the session.

@@ -93,6 +93,16 @@ export class TerminalSession {
     this.term.loadAddon(this.fit);
     this.term.loadAddon(this.search);
 
+    // Ctrl+V (Cmd+V on macOS) pastes, like Windows Terminal and PuTTY; a
+    // literal ^V is rare enough on network gear that paste wins.
+    this.term.attachCustomKeyEventHandler((e) => {
+      const mod = navigator.platform.toLowerCase().includes("mac") ? e.metaKey : e.ctrlKey;
+      if (e.type === "keydown" && mod && !e.altKey && e.key.toLowerCase() === "v") {
+        if (!e.shiftKey) void this.pasteClipboard();
+        return false;
+      }
+      return true;
+    });
     this.term.onData((data) => {
       if (!this.backendId) return;
       if (data.includes("\r")) this.captureCommand();

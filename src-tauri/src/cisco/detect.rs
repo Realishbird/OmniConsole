@@ -73,7 +73,9 @@ impl Os {
     /// Command that turns the pager off for this terminal session only.
     pub fn no_paging(self) -> Option<&'static str> {
         match self {
-            Os::Ios | Os::IosXe | Os::NxOs | Os::IosXr | Os::Ise => Some("terminal length 0"),
+            Os::Ios | Os::IosXe | Os::NxOs | Os::IosXr => Some("terminal length 0"),
+            // ADE-OS has no terminal length; probes carry `| nomore` instead
+            Os::Ise => None,
             Os::Aireos => Some("config paging disable"),
             Os::Asa => Some("terminal pager 0"),
             Os::SmallBusiness => Some("terminal datadump"),
@@ -139,6 +141,9 @@ pub fn detect_os(show_version: &str) -> Os {
         Os::Eos
     } else if t.contains("ArubaOS-CX") || t.contains("Aruba CX") || t.contains("AOS-CX") {
         Os::ArubaCx
+    } else if t.contains("ArubaOS") && (t.contains("MODEL:") || t.contains("Aruba Operating System") || t.contains("Mobility")) {
+        // a Mobility Controller or Instant AP: not a switch, so no AOS-S commands
+        Os::Unknown
     } else if t.contains("ArubaOS") || t.contains("ProCurve") || t.contains("Software revision") && (t.contains("Aruba") || t.contains("HP ")) {
         Os::ArubaOsS
     } else if t.contains("Cisco Nexus") || t.contains("NX-OS") || t.contains("NXOS:") {

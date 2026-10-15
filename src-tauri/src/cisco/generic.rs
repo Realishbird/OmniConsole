@@ -15,17 +15,20 @@ pub fn commands(os: Os, id: &str) -> Vec<&'static str> {
     use Os::*;
     match (id, os) {
         // ----- Cisco ISE (ADE-OS)
-        ("system", Ise) => vec!["show version", "show uptime"],
-        ("cpu", Ise) => vec!["show cpu"],
-        ("memory", Ise) => vec!["show memory"],
-        ("storage", Ise) => vec!["show disks"],
-        ("interface-errors", Ise) => vec!["show interface"],
-        ("ip-interfaces", Ise) => vec!["show interface | include inet|^[A-Za-z]"],
-        ("routing", Ise) => vec!["show ip route"],
-        ("time-sync", Ise) => vec!["show ntp"],
-        ("logs", Ise) => vec!["show logging system | last 100"],
-        ("services", Ise) => vec!["show application status ise"],
-        ("backups", Ise) => vec!["show backup history"],
+        // ADE-OS pages every command unless `| nomore` is appended; its
+        // filters are begin, count, exclude, include, linnum, more, nomore,
+        // save, until (no `last`, no `terminal length`)
+        ("system", Ise) => vec!["show version | nomore", "show uptime | nomore"],
+        ("cpu", Ise) => vec!["show cpu | nomore"],
+        ("memory", Ise) => vec!["show memory | nomore"],
+        ("storage", Ise) => vec!["show disks | nomore"],
+        ("interface-errors", Ise) => vec!["show interface | nomore"],
+        ("ip-interfaces", Ise) => vec!["show interface | include inet | nomore"],
+        ("routing", Ise) => vec!["show ip route | nomore"],
+        ("time-sync", Ise) => vec!["show ntp | nomore"],
+        ("logs", Ise) => vec!["show logging system messages tail count 100 | nomore"],
+        ("services", Ise) => vec!["show application status ise | nomore"],
+        ("backups", Ise) => vec!["show backup history | nomore"],
         ("neighbors", Ise) => vec![],
         ("uplinks", Ise) => vec![],
         ("arp", Ise) => vec![],
@@ -424,7 +427,9 @@ fn interface_errors(text: &str) -> Verdict {
             parsed += 1;
             continue;
         }
-        if counter.is_match(line) && !line.contains(" 0 ") {
+        // a line with any non-zero error counter; "0 input errors, 1234 output errors"
+        // must not be skipped because one field is zero
+        if counter.is_match(line) {
             hits.push(format!("{}: {}", current, line.trim()));
         }
     }
@@ -501,7 +506,8 @@ fn lag(text: &str) -> Verdict {
         return Verdict::new(Status::NotApplicable, "No LAGs configured");
     }
     let bad = grep(text, r"(?i)\b(down|standby|individual|suspended|detached|not bundled|lacp.?blocked|inactive|D\)|s\)|I\))");
-    let bad: Vec<String> = bad.into_iter().filter(|l| !re(r"(?i)^\s*(flags|legend|-|port|name)").is_match(l)).collect();
+    // the Flags legend ("D - Down", "s - Suspended", "I - Individual") is not a member
+    let bad: Vec<String> = bad.into_iter().filter(|l| !re(r"(?i)^\s*(flags|legend|-|port|name)|^\s*[A-Za-z]\s+-\s|\s[A-Za-z]\s+-\s[A-Za-z]").is_match(l)).collect();
     let rows = text.lines().filter(|l| re(r"(?i)\b(Po\d+|port-channel\d+|bond\d+|ae\d+|Trk\d+|lag\d+|PortChannel\d+)\b").is_match(l)).count();
     if !bad.is_empty() {
         Verdict::new(Status::Warning, format!("{} with a member down or not bundled", n(bad.len(), "LAG line"))).evidence(bad)
@@ -545,7 +551,8 @@ fn routing(os: Os, out: &Outputs) -> Verdict {
             let l = line.trim_end();
             if is_bgp {
                 // a neighbour row: address, AS, ..., state/prefixes
-                if re(r"^\s*\*?\s*\d{1,3}(\.\d{1,3}){3}\s").is_match(l) || re(r"^\s*[0-9a-f:]+:[0-9a-f:]+\s+\d").is_match(l) {
+                // an address, or an interface peer (BGP unnumbered: "swp1(leaf02) 4 65101 ...")
+                if re(r"^\s*\*?\s*\d{1,3}(\.\d{1,3}){3}\s").is_match(l) || re(r"^\s*[0-9a-f:]+:[0-9a-f:]+\s+\d").is_match(l) || re(r"^\s*(?:swp|eth|Ethernet|Et|et|xe|ge|Vlan|Po)\S*(?:\(\S+\))?\s+4\s+\d").is_match(l) {
                     seen += 1;
                     if re(r"(?i)\b(Idle|Active|Connect|OpenSent|OpenConfirm|never)\b").is_match(l) {
                         problems.push(format!("BGP: {l}"));
@@ -608,10 +615,11 @@ fn time_sync(text: &str) -> Verdict {
     if re(r"(?i)^\s*synchroni[sz]ed to").is_match(text) {
         return Verdict::new(Status::Healthy, "Clock synchronized").evidence(grep(text, r"(?i)sync|stratum|server"));
     }
-    if re(r"(?i)(unsynchroni[sz]ed|not synchroni|no (ntp )?server|stratum\s*:?\s*16|Leap status\s*:\s*Not synchroni|System clock synchronized:\s*no|clock is not|NTP is disabled|not enabled)").is_match(text) {
+    // Junos: "status=0644 leap_none, sync_ntp, ... stratum=3"; unsynced "leap_alarm, sync_unspec, stratum=16"
+    if re(r"(?i)(unsynchroni[sz]ed|not synchroni|no (ntp )?server|stratum\s*[:=]?\s*16\b|Leap status\s*:\s*Not synchroni|System clock synchronized:\s*no|clock is not|NTP is disabled|not enabled|leap_alarm|sync_unspec)").is_match(text) {
         return Verdict::new(Status::Warning, "Clock is not synchronized").evidence(grep(text, r"(?i)sync|stratum|server|leap|ntp"));
     }
-    if re(r"(?i)(\bsynchroni[sz]ed\b|System clock synchronized:\s*yes|Leap status\s*:\s*Normal|stratum\s*:?\s*[1-9]\b|stratum\s*:?\s*1[0-5]\b|^\s*\*)").is_match(text) {
+    if re(r"(?i)(\bsynchroni[sz]ed\b|System clock synchronized:\s*yes|Leap status\s*:\s*Normal|stratum\s*[:=]?\s*[1-9]\b|stratum\s*[:=]?\s*1[0-5]\b|sync_ntp|^\s*\*)").is_match(text) {
         return Verdict::new(Status::Healthy, "Clock synchronized").evidence(grep(text, r"(?i)sync|stratum|server|reference|leap"));
     }
     Verdict::unknown("could not read the NTP status").evidence(text.lines().take(5).map(|l| l.to_string()).collect())
@@ -648,6 +656,15 @@ fn storage(text: &str) -> Verdict {
             let (t, f) = (num(&c[1]).unwrap_or(0.0), num(&c[2]).unwrap_or(0.0));
             if t > 0.0 {
                 worst = Some(((t - f) / t * 100.0, c[0].to_string()));
+            }
+        }
+    }
+    if worst.is_none() {
+        // NX-OS `dir bootflash: | include bytes`: "X bytes used", "Y bytes free", "Z bytes total"
+        if let (Some(u), Some(t)) = (re(r"(\d+)\s+bytes used").captures(text), re(r"(\d+)\s+bytes total").captures(text)) {
+            let (u, t) = (num(&u[1]).unwrap_or(0.0), num(&t[1]).unwrap_or(0.0));
+            if t > 0.0 {
+                worst = Some((u / t * 100.0, format!("{} bytes used of {} total", u, t)));
             }
         }
     }
