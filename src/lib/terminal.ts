@@ -1,10 +1,14 @@
-// One tab: an xterm.js terminal wired to a backend session.
-import { Terminal, type ITheme } from "@xterm/xterm";
+// One terminal: an xterm.js instance wired to a backend session.
+import { Terminal, type IDecoration, type IMarker, type ITheme } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { answerSession, closeSession, openSession, resizeSession, writeSession } from "./backend";
+import { answerSession, breakSession, closeSession, openSession, resizeSession, writeSession } from "./backend";
+import { Highlighter } from "./highlight";
+import { parsePrompt, type PromptInfo } from "./prompt";
+import { fontStack, type Settings } from "./settings";
+import { themeById } from "./themes";
 import type { ConnectSpec, PromptKind, SessionEvent } from "./types";
 
 export type SessionState = "connecting" | "connected" | "closed" | "error";
@@ -16,90 +20,72 @@ export interface PendingPrompt {
   echo: boolean;
 }
 
-export const DARK_THEME: ITheme = {
-  background: "#16181d",
-  foreground: "#d8dee9",
-  cursor: "#7aa2f7",
-  cursorAccent: "#16181d",
-  selectionBackground: "#3b4261",
-  black: "#1d2026",
-  red: "#f7768e",
-  green: "#9ece6a",
-  yellow: "#e0af68",
-  blue: "#7aa2f7",
-  magenta: "#bb9af7",
-  cyan: "#7dcfff",
-  white: "#c0caf5",
-  brightBlack: "#565f89",
-  brightRed: "#ff8fa3",
-  brightGreen: "#b5e890",
-  brightYellow: "#f3c786",
-  brightBlue: "#9ab8ff",
-  brightMagenta: "#cdb4ff",
-  brightCyan: "#a4ddff",
-  brightWhite: "#e6ebff",
-};
-
-export const LIGHT_THEME: ITheme = {
-  background: "#fbfbfc",
-  foreground: "#24292f",
-  cursor: "#0969da",
-  cursorAccent: "#fbfbfc",
-  selectionBackground: "#b6d6fb",
-  black: "#24292f",
-  red: "#cf222e",
-  green: "#116329",
-  yellow: "#7d4e00",
-  blue: "#0550ae",
-  magenta: "#8250df",
-  cyan: "#1b7c83",
-  white: "#6e7781",
-  brightBlack: "#57606a",
-  brightRed: "#a40e26",
-  brightGreen: "#1a7f37",
-  brightYellow: "#633c01",
-  brightBlue: "#218bff",
-  brightMagenta: "#a475f9",
-  brightCyan: "#3192aa",
-  brightWhite: "#8c959f",
-};
+export interface Bookmark {
+  id: number;
+  label: string;
+  at: number;
+  marker: IMarker;
+  decoration?: IDecoration;
+}
 
 export interface SessionCallbacks {
   onState: (state: SessionState, message: string) => void;
   onPrompt: (prompt: PendingPrompt | null) => void;
   onSize: (cols: number, rows: number) => void;
+  onLog: (path: string) => void;
+  /** the device prompt changed (host name, privilege level) */
+  onPromptInfo: (info: PromptInfo | null) => void;
+  /** a command line was entered at a device prompt */
+  onCommand: (command: string) => void;
+  onFocus: () => void;
   /** multi-line paste: resolve true to paste */
   confirmPaste: (lines: number) => Promise<boolean>;
+}
+
+export type SessionSpec = Omit<ConnectSpec, "cols" | "rows">;
+
+function termTheme(settings: Settings): ITheme {
+  return { ...themeById(settings.theme).term, ...settings.ansiOverrides };
 }
 
 export class TerminalSession {
   readonly element: HTMLDivElement;
   readonly term: Terminal;
   readonly search: SearchAddon;
+  bookmarks: Bookmark[] = [];
   private fit: FitAddon;
   private backendId: string | null = null;
   private opened = false;
   private disposed = false;
   private generation = 0; // output of an older connection (before reconnect) is dropped
+  private decoder = new TextDecoder();
+  private highlighter = new Highlighter();
+  private highlight: boolean;
+  private promptTimer: number | undefined;
+  private lastPrompt = "";
+  private nextBookmark = 1;
 
   constructor(
-    readonly spec: Omit<ConnectSpec, "cols" | "rows">,
+    public spec: SessionSpec,
     private callbacks: SessionCallbacks,
-    dark: boolean,
+    settings: Settings,
   ) {
+    this.highlight = settings.highlight;
     this.element = document.createElement("div");
     this.element.className = "terminal-host";
     this.term = new Terminal({
-      fontFamily: '"Cascadia Mono", "JetBrains Mono", "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace',
-      fontSize: 14,
-      lineHeight: 1.15,
-      cursorBlink: true,
-      cursorStyle: "block",
-      scrollback: 50000,
+      fontFamily: fontStack(settings.fontFamily),
+      fontSize: settings.fontSize,
+      lineHeight: settings.lineHeight,
+      letterSpacing: settings.letterSpacing,
+      cursorBlink: settings.cursorBlink,
+      cursorStyle: settings.cursorStyle,
+      minimumContrastRatio: settings.minimumContrast,
+      scrollback: settings.scrollback,
       allowProposedApi: true,
       macOptionIsMeta: true,
       rightClickSelectsWord: false,
-      theme: dark ? DARK_THEME : LIGHT_THEME,
+      theme: termTheme(settings),
     });
     this.fit = new FitAddon();
     this.search = new SearchAddon();
@@ -107,7 +93,9 @@ export class TerminalSession {
     this.term.loadAddon(this.search);
 
     this.term.onData((data) => {
-      if (this.backendId) void writeSession(this.backendId, data);
+      if (!this.backendId) return;
+      if (data.includes("\r")) this.captureCommand();
+      void writeSession(this.backendId, data);
     });
     this.term.onResize(({ cols, rows }) => {
       this.callbacks.onSize(cols, rows);
@@ -122,6 +110,7 @@ export class TerminalSession {
       e.preventDefault();
       void this.pasteClipboard();
     });
+    this.element.addEventListener("mousedown", () => this.callbacks.onFocus());
     // every paste goes through pasteText, so a multi-line paste is confirmed
     this.element.addEventListener(
       "paste",
@@ -133,6 +122,27 @@ export class TerminalSession {
       true,
     );
   }
+
+  get connectedId(): string | null {
+    return this.backendId;
+  }
+
+  applySettings(settings: Settings) {
+    const o = this.term.options;
+    o.theme = termTheme(settings);
+    o.fontFamily = fontStack(settings.fontFamily);
+    o.fontSize = settings.fontSize;
+    o.lineHeight = settings.lineHeight;
+    o.letterSpacing = settings.letterSpacing;
+    o.cursorStyle = settings.cursorStyle;
+    o.cursorBlink = settings.cursorBlink;
+    o.minimumContrastRatio = settings.minimumContrast;
+    o.scrollback = settings.scrollback;
+    this.highlight = settings.highlight;
+    this.fitNow();
+  }
+
+  /* ---------- input ---------- */
 
   async pasteClipboard() {
     try {
@@ -153,12 +163,52 @@ export class TerminalSession {
     this.term.focus();
   }
 
+  /** Type text into the session as if typed (snippets, history). */
+  send(text: string) {
+    if (!this.backendId) return;
+    if (text.includes("\r")) this.captureCommand();
+    void writeSession(this.backendId, text);
+    this.term.focus();
+  }
+
+  sendBreak() {
+    if (this.backendId) void breakSession(this.backendId);
+  }
+
   copySelection() {
     const text = this.term.getSelection();
     if (text) void writeText(text).catch(() => {});
   }
 
-  /** First time the tab is shown: attach to the DOM, size it, connect. */
+  selection(): string {
+    return this.term.getSelection();
+  }
+
+  /** The line the cursor is on, as plain text. */
+  private cursorLine(): string {
+    const buf = this.term.buffer.active;
+    return buf.getLine(buf.baseY + buf.cursorY)?.translateToString(true) ?? "";
+  }
+
+  /** Enter was pressed: record what was typed after the device prompt. */
+  private captureCommand() {
+    const p = parsePrompt(this.cursorLine());
+    if (p?.command) this.callbacks.onCommand(p.command);
+  }
+
+  private checkPrompt() {
+    const line = this.cursorLine();
+    const p = parsePrompt(line);
+    const key = p ? `${p.hostname}|${p.privilege}|${p.mode}` : "";
+    if (p && key !== this.lastPrompt) {
+      this.lastPrompt = key;
+      this.callbacks.onPromptInfo(p);
+    }
+  }
+
+  /* ---------- lifecycle ---------- */
+
+  /** First time the terminal is shown: attach to the DOM, size it, connect. */
   async attach(container: HTMLElement) {
     if (this.element.parentElement !== container) container.appendChild(this.element);
     if (this.opened) {
@@ -176,19 +226,34 @@ export class TerminalSession {
     await this.connect();
   }
 
+  private output(bytes: Uint8Array) {
+    if (this.highlight) this.term.write(this.highlighter.feed(this.decoder.decode(bytes, { stream: true })));
+    else this.term.write(bytes);
+    window.clearTimeout(this.promptTimer);
+    this.promptTimer = window.setTimeout(() => this.checkPrompt(), 120);
+  }
+
   async connect() {
     if (this.disposed) return;
     const gen = ++this.generation;
+    this.decoder = new TextDecoder();
+    this.highlighter = new Highlighter();
+    this.lastPrompt = "";
+    this.callbacks.onPromptInfo(null);
     this.callbacks.onState("connecting", "Connecting");
-    this.backendId = await openSession(
-      { ...this.spec, cols: this.term.cols, rows: this.term.rows },
-      (bytes) => {
-        if (gen === this.generation && !this.disposed) this.term.write(bytes);
-      },
-      (event) => {
-        if (gen === this.generation && !this.disposed) this.handleEvent(event);
-      },
-    );
+    try {
+      this.backendId = await openSession(
+        { ...this.spec, cols: this.term.cols, rows: this.term.rows },
+        (bytes) => {
+          if (gen === this.generation && !this.disposed) this.output(bytes);
+        },
+        (event) => {
+          if (gen === this.generation && !this.disposed) this.handleEvent(event);
+        },
+      );
+    } catch (e) {
+      this.callbacks.onState("error", String(e));
+    }
   }
 
   /** Reconnect a closed session in the same tab. */
@@ -204,13 +269,10 @@ export class TerminalSession {
     if (event.type === "status") {
       if (event.state !== "connecting") this.callbacks.onPrompt(null);
       this.callbacks.onState(event.state, event.message);
+    } else if (event.type === "log") {
+      this.callbacks.onLog(event.path);
     } else {
-      this.callbacks.onPrompt({
-        kind: event.kind,
-        message: event.message,
-        fingerprint: event.fingerprint,
-        echo: event.echo,
-      });
+      this.callbacks.onPrompt({ kind: event.kind, message: event.message, fingerprint: event.fingerprint, echo: event.echo });
     }
   }
 
@@ -219,6 +281,42 @@ export class TerminalSession {
     if (this.backendId) void answerSession(this.backendId, value);
     this.term.focus();
   }
+
+  /** A grey line from OmniConsole itself. */
+  notice(text: string) {
+    this.term.write(`\r\n\x1b[90m${text}\x1b[0m\r\n`);
+  }
+
+  /* ---------- bookmarks ---------- */
+
+  addBookmark(label?: string): Bookmark | null {
+    const marker = this.term.registerMarker(0);
+    if (!marker) return null;
+    const id = this.nextBookmark++;
+    const decoration = this.term.registerDecoration({
+      marker,
+      width: 1,
+      overviewRulerOptions: { color: "#e0af68", position: "full" },
+    });
+    decoration?.onRender((el) => {
+      el.classList.add("bookmark-mark");
+      el.title = `Bookmark ${id}`;
+    });
+    const text = this.cursorLine().trim();
+    const b: Bookmark = { id, label: label || text || `Bookmark ${id}`, at: Date.now(), marker, decoration };
+    marker.onDispose(() => {
+      this.bookmarks = this.bookmarks.filter((x) => x !== b);
+    });
+    this.bookmarks.push(b);
+    return b;
+  }
+
+  goToBookmark(id: number) {
+    const b = this.bookmarks.find((x) => x.id === id);
+    if (b && b.marker.line >= 0) this.term.scrollToLine(Math.max(0, b.marker.line - 3));
+  }
+
+  /* ---------- layout and output ---------- */
 
   fitNow() {
     if (!this.opened || this.element.offsetParent === null) return;
@@ -231,15 +329,6 @@ export class TerminalSession {
 
   focus() {
     this.term.focus();
-  }
-
-  setDark(dark: boolean) {
-    this.term.options.theme = dark ? DARK_THEME : LIGHT_THEME;
-  }
-
-  setFontSize(size: number) {
-    this.term.options.fontSize = size;
-    this.fitNow();
   }
 
   /** Whole scrollback as plain text, for "Save output". */
@@ -255,6 +344,7 @@ export class TerminalSession {
 
   dispose() {
     this.disposed = true;
+    window.clearTimeout(this.promptTimer);
     if (this.backendId) void closeSession(this.backendId);
     this.backendId = null;
     this.term.dispose();

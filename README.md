@@ -6,29 +6,54 @@ Runs on Windows (x64, ARM64), macOS (Apple Silicon, Intel) and Linux (x64, ARM64
 
 ## Features
 
-- SSH with password and keyboard-interactive login, plus legacy algorithms for older Cisco gear (diffie-hellman-group1/14-sha1, ssh-rsa, AES-CBC, 3DES)
-- Telnet (handles option negotiation and window size) and serial console (port picker, baud rate)
-- Every session opens as a tab in one window
-- Saved devices grouped by site, with search
-- Passwords live in the OS credential store (Windows Credential Manager, macOS Keychain, Linux Secret Service), never in files
-- Host keys are trusted on first use, with a warning if one changes
-- Quick connect bar: `ssh admin@10.0.0.1`, `telnet 10.0.0.5 2001`, `COM3 9600`, `/dev/ttyUSB0`
-- Copy on select, right-click paste, a confirmation before multi-line pastes, find in scrollback, save output to a text file
-- Dark and light themes
+**Connections**
+- SSH with password, key file (with passphrase) or SSH agent login (ssh-agent, OpenSSH agent for Windows, Pageant), plus legacy algorithms for older Cisco gear (diffie-hellman-group1/14-sha1, ssh-rsa, AES-CBC, 3DES)
+- Jump hosts: connect through another saved SSH device
+- Telnet with option negotiation, window size and BREAK
+- Serial console with port picker, baud rate, data bits, parity, stop bits, flow control and a break signal for ROMMON
+- Every session opens as a tab in one window; split the window right or down to watch two sessions
+- Keepalives, automatic reconnect per device, a reconnect banner when a session drops
 
-Planned: read-only Cisco diagnostics collection and an offline AI analyzer that recommends fixes but never changes anything.
+**Saved devices**
+- Organized by customer, site, building, rack, device role, environment and tags; group the sidebar by any of them
+- Search every field, or filter with `role:core`, `tag:stack`, `env:production`
+- Favorites, recent sessions, import (OmniConsole JSON or CSV) and export (never includes passwords)
+- Production, staging, lab and customer environments color the tab and the status bar; the status bar also shows the protocol, the host name from the prompt, and the privilege level (user EXEC, privileged, config mode)
+
+**Terminal**
+- Command palette (Ctrl/Cmd+Shift+P): actions, devices, snippets, bookmarks and command history
+- Searchable command history, reusable snippets, output bookmarks
+- Optional highlighting of IP and MAC addresses, interface names, syslog severities, errors and up/down states
+- Session logging to `Documents/OmniConsole/Logs/<date>/`, with optional timestamps; passwords, secrets, SNMP communities and keys are masked
+- Copy on select, right-click paste, confirmation before multi-line pastes, find in scrollback, save output or a selection to a file
+
+**Security**
+- Passwords and key passphrases live in the OS credential store (Windows Credential Manager, macOS Keychain, Linux Secret Service), never in files or exports
+- Host keys are trusted on first use, with a loud warning if one changes
+- A warning before Telnet to a production device, and before sending snippets to one
+
+**Themes**: Midnight, Graphite, Nord, Dracula, Solarized Dark and Light. Fonts, size, spacing, cursor, contrast and the 16 ANSI colors are adjustable; compact and comfortable layouts.
+
+Planned next: command runner with read-only health checks, config backup with diff and search, the AI assistant (local and cloud providers, redaction, commands shown for review before anything is sent), workstation tools (ping, traceroute, DNS, port check, subnet calculator), templates and reviewed deployment with rollback, SFTP/SCP.
 
 ## Shortcuts
 
 | Keys | Action |
 | --- | --- |
-| Ctrl/Cmd+Shift+T | New tab (quick connect) |
+| Ctrl/Cmd+Shift+P or Ctrl/Cmd+K | Command palette |
+| Ctrl/Cmd+Shift+T | Quick connect |
 | Ctrl/Cmd+Shift+W | Close tab |
-| Ctrl+Tab | Next tab |
+| Ctrl+Tab, Alt+1…9 | Switch tab |
+| Ctrl/Cmd+Shift+D / E | Split right / down (again to unsplit); F6 switches panes |
 | Ctrl/Cmd+Shift+B | Toggle sidebar |
-| Ctrl/Cmd+Shift+F | Find |
+| Ctrl/Cmd+Shift+F | Find in output |
+| Ctrl/Cmd+Shift+H | Command history |
+| Ctrl/Cmd+Shift+O | Snippets |
+| Ctrl/Cmd+Shift+M | Bookmark the current line |
+| Ctrl/Cmd+Shift+R | Reconnect |
 | Ctrl/Cmd+Shift+C / V | Copy / paste |
 | Ctrl/Cmd+Shift+S | Save output |
+| Ctrl/Cmd+, | Settings |
 | Ctrl/Cmd + / - / 0 | Font size |
 
 ## Build

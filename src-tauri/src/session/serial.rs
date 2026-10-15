@@ -6,18 +6,56 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use serialport::{DataBits, FlowControl, Parity, StopBits};
 use tokio::sync::mpsc;
 
 use super::{ConnectSpec, Input, Io};
 
+/// "9600 8N1", the way console settings are usually written
+pub fn settings_label(spec: &ConnectSpec) -> String {
+    let parity = match spec.parity.as_str() {
+        "odd" => 'O',
+        "even" => 'E',
+        _ => 'N',
+    };
+    let flow = match spec.flow_control.as_str() {
+        "software" => ", XON/XOFF",
+        "hardware" => ", RTS/CTS",
+        _ => "",
+    };
+    let baud = if spec.baud == 0 { 9600 } else { spec.baud };
+    format!("{baud} {}{parity}{}{flow}", spec.data_bits, spec.stop_bits)
+}
+
 pub async fn run(spec: &ConnectSpec, io: &Io, mut input: mpsc::UnboundedReceiver<Input>) -> Result<()> {
     let baud = if spec.baud == 0 { 9600 } else { spec.baud };
+    let data_bits = match spec.data_bits {
+        5 => DataBits::Five,
+        6 => DataBits::Six,
+        7 => DataBits::Seven,
+        _ => DataBits::Eight,
+    };
+    let parity = match spec.parity.as_str() {
+        "odd" => Parity::Odd,
+        "even" => Parity::Even,
+        _ => Parity::None,
+    };
+    let stop_bits = if spec.stop_bits == 2 { StopBits::Two } else { StopBits::One };
+    let flow = match spec.flow_control.as_str() {
+        "software" => FlowControl::Software,
+        "hardware" => FlowControl::Hardware,
+        _ => FlowControl::None,
+    };
     let port = serialport::new(&spec.serial_port, baud)
+        .data_bits(data_bits)
+        .parity(parity)
+        .stop_bits(stop_bits)
+        .flow_control(flow)
         .timeout(Duration::from_millis(100))
         .open()
         .with_context(|| format!("opening {}", spec.serial_port))?;
     let mut writer = port.try_clone().context("serial port")?;
-    io.status("connected", format!("Serial {} {} baud", spec.serial_port, baud));
+    io.status("connected", format!("Serial {} {}", spec.serial_port, settings_label(spec)));
 
     // reading blocks, so it gets its own thread
     let stop = Arc::new(AtomicBool::new(false));
@@ -49,6 +87,14 @@ pub async fn run(spec: &ConnectSpec, io: &Io, mut input: mpsc::UnboundedReceiver
                     }
                 }
                 Some(Input::Resize(..)) => {}
+                Some(Input::Break) => {
+                    // a 500 ms break, long enough for ROMMON on every Cisco platform
+                    if writer.set_break().is_ok() {
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                        let _ = writer.clear_break();
+                        io.notice("Break sent.");
+                    }
+                }
                 Some(Input::Close) | None => break Ok(()),
             },
             Some(err) = gone_rx.recv() => {

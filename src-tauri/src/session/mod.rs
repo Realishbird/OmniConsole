@@ -2,40 +2,103 @@
 //! the UI sends input through `Input` and receives output bytes on a raw
 //! channel and state changes / questions on an event channel.
 
+mod log;
 mod serial;
 mod ssh;
 mod telnet;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use tauri::ipc::{Channel, InvokeResponseBody};
 use tokio::sync::{mpsc, oneshot};
 
+/// A jump host (bastion) the SSH connection is tunnelled through.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JumpSpec {
+    pub host: String,
+    #[serde(default)]
+    pub port: u16,
+    #[serde(default)]
+    pub username: String,
+    #[serde(default)]
+    pub device_id: Option<String>,
+    #[serde(default = "default_auth")]
+    pub auth_method: String,
+    #[serde(default)]
+    pub key_path: String,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectSpec {
     pub protocol: String, // "ssh" | "telnet" | "serial"
+    /// tab title, used for the log file name
+    #[serde(default)]
+    pub label: String,
     #[serde(default)]
     pub host: String,
     #[serde(default)]
     pub port: u16,
     #[serde(default)]
     pub username: String,
-    /// saved device: the password comes from the OS credential store
+    /// saved device: secrets come from the OS credential store
     #[serde(default)]
     pub device_id: Option<String>,
     /// quick connect: typed by the user, not saved
     #[serde(default)]
     pub password: Option<String>,
+
+    // SSH
+    /// "password" | "key" | "agent"
+    #[serde(default = "default_auth")]
+    pub auth_method: String,
+    #[serde(default)]
+    pub key_path: String,
+    #[serde(default)]
+    pub jump: Option<Box<JumpSpec>>,
+    /// seconds, 0 = off
+    #[serde(default = "default_keepalive")]
+    pub keepalive: u32,
+
+    // serial
     #[serde(default)]
     pub serial_port: String,
     #[serde(default)]
     pub baud: u32,
+    #[serde(default = "default_data_bits")]
+    pub data_bits: u8,
+    #[serde(default)]
+    pub parity: String,
+    #[serde(default = "default_stop_bits")]
+    pub stop_bits: u8,
+    #[serde(default)]
+    pub flow_control: String,
+
+    // logging
+    #[serde(default)]
+    pub log: bool,
+    #[serde(default)]
+    pub log_timestamps: bool,
+
     pub cols: u16,
     pub rows: u16,
+}
+
+fn default_auth() -> String {
+    "password".into()
+}
+fn default_keepalive() -> u32 {
+    30
+}
+fn default_data_bits() -> u8 {
+    8
+}
+fn default_stop_bits() -> u8 {
+    1
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -46,17 +109,22 @@ pub enum SessionEvent {
     /// the session waits for `session_answer`
     #[serde(rename_all = "camelCase")]
     Prompt {
-        kind: &'static str, // "password" | "hostKeyNew" | "hostKeyChanged" | "keyboard"
+        kind: &'static str, // "password" | "username" | "passphrase" | "hostKeyNew" | "hostKeyChanged" | "keyboard"
         message: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         fingerprint: Option<String>,
         echo: bool,
     },
+    /// the session is being written to this log file
+    #[serde(rename_all = "camelCase")]
+    Log { path: String },
 }
 
 pub enum Input {
     Data(Vec<u8>),
     Resize(u16, u16),
+    /// serial break / Telnet BRK (ROMMON and password recovery)
+    Break,
     Close,
 }
 
@@ -68,10 +136,14 @@ pub struct Io {
     data: Channel<InvokeResponseBody>,
     events: Channel<SessionEvent>,
     pending: Arc<Mutex<Option<oneshot::Sender<Option<String>>>>>,
+    log: Arc<Mutex<Option<log::SessionLog>>>,
 }
 
 impl Io {
     pub fn output(&self, bytes: &[u8]) {
+        if let Some(log) = self.log.lock().unwrap().as_mut() {
+            log.feed(bytes);
+        }
         let _ = self.data.send(InvokeResponseBody::Raw(bytes.to_vec()));
     }
 
@@ -113,6 +185,7 @@ impl SessionManager {
     pub fn open(
         &self,
         config_dir: PathBuf,
+        log_dir: &Path,
         spec: ConnectSpec,
         data: Channel<InvokeResponseBody>,
         events: Channel<SessionEvent>,
@@ -120,8 +193,19 @@ impl SessionManager {
         let id = uuid::Uuid::new_v4().to_string();
         let (tx, rx) = mpsc::unbounded_channel();
         let pending = Arc::new(Mutex::new(None));
-        let io = Io { config_dir, data, events, pending: pending.clone() };
+        let io = Io { config_dir, data, events, pending: pending.clone(), log: Arc::new(Mutex::new(None)) };
         self.sessions.lock().unwrap().insert(id.clone(), Handle { input: tx, pending });
+
+        if spec.log {
+            let label = if spec.label.is_empty() { describe(&spec) } else { spec.label.clone() };
+            match log::SessionLog::create(log_dir, &label, &describe(&spec), spec.log_timestamps) {
+                Ok(l) => {
+                    let _ = io.events.send(SessionEvent::Log { path: l.path.display().to_string() });
+                    *io.log.lock().unwrap() = Some(l);
+                }
+                Err(e) => io.notice(&format!("Session log not started: {e:#}")),
+            }
+        }
 
         tauri::async_runtime::spawn(async move {
             io.status("connecting", describe(&spec));
@@ -141,6 +225,8 @@ impl SessionManager {
                     io.status("error", format!("{e:#}"));
                 }
             }
+            // closes the log file
+            io.log.lock().unwrap().take();
         });
         id
     }
@@ -157,6 +243,10 @@ impl SessionManager {
 
     pub fn resize(&self, id: &str, cols: u16, rows: u16) {
         self.send(id, Input::Resize(cols, rows));
+    }
+
+    pub fn send_break(&self, id: &str) {
+        self.send(id, Input::Break);
     }
 
     pub fn close(&self, id: &str) {
@@ -180,7 +270,7 @@ impl SessionManager {
 
 pub fn describe(spec: &ConnectSpec) -> String {
     match spec.protocol.as_str() {
-        "serial" => format!("Serial {} {} baud", spec.serial_port, spec.baud),
+        "serial" => format!("Serial {} {}", spec.serial_port, serial::settings_label(spec)),
         p => format!("{} {}:{}", p.to_uppercase(), spec.host, spec.port),
     }
 }
@@ -196,7 +286,7 @@ mod tests {
     async fn ssh_login_and_shell() {
         let target = std::env::var("OMNI_SSH_TEST").expect("set OMNI_SSH_TEST=host:port:user:password");
         let parts: Vec<&str> = target.splitn(4, ':').collect();
-        let (host, port, user, pass) = (parts[0], parts[1].parse().unwrap(), parts[2], parts[3].to_string());
+        let (host, port, user, pass) = (parts[0], parts[1].parse::<u16>().unwrap(), parts[2], parts[3].to_string());
 
         let output = Arc::new(Mutex::new(Vec::<u8>::new()));
         let pending: Arc<Mutex<Option<oneshot::Sender<Option<String>>>>> = Arc::new(Mutex::new(None));
@@ -226,19 +316,12 @@ mod tests {
         });
         let dir = std::env::temp_dir().join(format!("omni-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        let io = Io { config_dir: dir.clone(), data, events, pending };
-        let spec = ConnectSpec {
-            protocol: "ssh".into(),
-            host: host.into(),
-            port,
-            username: user.into(),
-            device_id: None,
-            password: None, // forces the password prompt path
-            serial_port: String::new(),
-            baud: 0,
-            cols: 100,
-            rows: 30,
-        };
+        let io = Io { config_dir: dir.clone(), data, events, pending, log: Arc::new(Mutex::new(None)) };
+        let mut spec: ConnectSpec = serde_json::from_value(serde_json::json!({
+            "protocol": "ssh", "host": host, "port": port, "username": user, "cols": 100, "rows": 30,
+        }))
+        .unwrap();
+        spec.password = None; // forces the password prompt path
         let (tx, rx) = mpsc::unbounded_channel();
         tx.send(Input::Resize(120, 40)).unwrap();
         tx.send(Input::Data(b"echo omni-$((40+2))\r".to_vec())).unwrap();
@@ -251,5 +334,60 @@ mod tests {
         assert!(text.contains("omni-42"), "output was: {text}");
         // the host key was remembered
         assert!(std::fs::read_to_string(dir.join("known_hosts.json")).unwrap().contains(&format!("{host}:{port}")));
+    }
+
+    /// Key login through a jump host (the same server twice is fine):
+    /// OMNI_SSH_KEY_TEST=host:port:user:/path/to/key cargo test -- --ignored
+    #[tokio::test]
+    #[ignore]
+    async fn ssh_key_through_jump_host() {
+        let target = std::env::var("OMNI_SSH_KEY_TEST").expect("set OMNI_SSH_KEY_TEST=host:port:user:keypath");
+        let parts: Vec<&str> = target.splitn(4, ':').collect();
+        let (host, port, user, key) = (parts[0], parts[1].parse::<u16>().unwrap(), parts[2], parts[3]);
+
+        let output = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let pending: Arc<Mutex<Option<oneshot::Sender<Option<String>>>>> = Arc::new(Mutex::new(None));
+        let out = output.clone();
+        let data = Channel::new(move |body| {
+            if let InvokeResponseBody::Raw(bytes) = body {
+                out.lock().unwrap().extend(bytes);
+            }
+            Ok(())
+        });
+        let answer_slot = pending.clone();
+        let events = Channel::new(move |body| {
+            if let InvokeResponseBody::Json(json) = body {
+                let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+                if v["type"] == "prompt" {
+                    // only host keys may be asked; a password prompt means key auth failed
+                    let answer = (v["kind"] == "hostKeyNew").then(|| "yes".to_string());
+                    if let Some(tx) = answer_slot.lock().unwrap().take() {
+                        let _ = tx.send(answer);
+                    }
+                }
+            }
+            Ok(())
+        });
+        let dir = std::env::temp_dir().join(format!("omni-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let io = Io { config_dir: dir.clone(), data, events, pending, log: Arc::new(Mutex::new(None)) };
+        // OMNI_SSH_AUTH=agent uses the running ssh-agent instead of the key file
+        let method = std::env::var("OMNI_SSH_AUTH").unwrap_or_else(|_| "key".into());
+        let spec: ConnectSpec = serde_json::from_value(serde_json::json!({
+            "protocol": "ssh", "host": "localhost", "port": port, "username": user,
+            "authMethod": method, "keyPath": key, "cols": 100, "rows": 30,
+            "jump": { "host": host, "port": port, "username": user, "authMethod": method, "keyPath": key },
+        }))
+        .unwrap();
+        let (tx, rx) = mpsc::unbounded_channel();
+        tx.send(Input::Data(b"echo omni-$((40+2))\r".to_vec())).unwrap();
+        tx.send(Input::Data(b"exit\r".to_vec())).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(20), ssh::run(&spec, &io, rx))
+            .await
+            .expect("timed out")
+            .expect("ssh session failed");
+        let text = String::from_utf8_lossy(&output.lock().unwrap()).to_string();
+        assert!(text.contains("omni-42"), "output was: {text}");
+        assert!(text.contains("jump host"), "output was: {text}");
     }
 }
