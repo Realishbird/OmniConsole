@@ -72,6 +72,12 @@ interface TabTools {
 
 const cache = new Map<string, TabTools>();
 
+/** The platform detected on a console tab, if its tools have run (used by shortcuts that depend on the device). */
+export function detectedOs(tabKey: string): string | null {
+  const t = cache.get(tabKey);
+  return t?.osOverride ?? t?.facts?.os ?? null;
+}
+
 function fresh(): TabTools {
   return { facts: null, report: null, baseline: null, baselineLabel: "", running: false, progress: null, live: [], selected: [], error: null, every: 0, tier: "quick", osOverride: null, pre: null, expectedAps: 0, ise: { host: "", username: "", insecure: false, saved: false, running: false, error: null } };
 }

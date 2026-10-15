@@ -109,10 +109,11 @@ export default function Collect({ sessionId, tabKey, facts, onFacts, deviceName,
         <span className="grow" />
         {st.running && <button className="btn small" onClick={() => sessionId && void cancelChecks(sessionId)}><StopIcon /> Stop</button>}
       </div>
+      <p className="tools-intro">Collect runs a platform's read-only <code>show</code> commands as a set and keeps the raw output per tab: for a ticket, a timestamped capture next to the config backups, or to hand to the assistant. Checks grade the device; Collect only gathers evidence and changes nothing.</p>
       <div className="dialog-tabs small">
-        <button className={tab === "collections" ? "on" : ""} onClick={() => setTab("collections")}>Quick actions</button>
-        <button className={tab === "troubleshooting" ? "on" : ""} onClick={() => setTab("troubleshooting")}>Troubleshooting</button>
-        <button className={tab === "workflow" ? "on" : ""} onClick={() => setTab("workflow")}>Change workflow</button>
+        <button className={tab === "collections" ? "on" : ""} onClick={() => setTab("collections")} title="Show-command sets by area: system, config, interfaces, layer 2, routing, logs">Show-command sets</button>
+        <button className={tab === "troubleshooting" ? "on" : ""} onClick={() => setTab("troubleshooting")} title="Command sets for a specific problem: a port, a LAG, a BGP neighbor, a crash">Troubleshooting sets</button>
+        <button className={tab === "workflow" ? "on" : ""} onClick={() => setTab("workflow")} title="How this platform enters configuration, commits, saves and rolls back; Deploy follows this">How changes work here</button>
       </div>
       {profile && <div className="quiet small">{profile.vendor} {profile.label}{profile.reference ? ` · ${profile.reference}` : ""}</div>}
       {st.progress && (
@@ -140,8 +141,8 @@ export default function Collect({ sessionId, tabKey, facts, onFacts, deviceName,
                   <div className="check-detail">
                     {c.commands.length > 0 ? (
                       <div className="follow">
-                        <button className="btn small primary" disabled={!sessionId || !!st.running} onClick={() => void run(c)}><PlayIcon /> {r ? "Collect again" : "Collect"}</button>
-                        {c.commands.map((cmd) => <button key={cmd} className="btn small" disabled={!sessionId} title="Send to the terminal" onClick={() => onSend(cmd)}>{cmd}</button>)}
+                        <button className="btn small primary" disabled={!sessionId || !!st.running} title="Run every command in this set and keep the output here" onClick={() => void run(c)}><PlayIcon /> {r ? "Run the set again" : "Run the set"}</button>
+                        {c.commands.map((cmd) => <button key={cmd} className="btn small" disabled={!sessionId} title="Type just this command in the terminal" onClick={() => onSend(cmd)}>{cmd}</button>)}
                       </div>
                     ) : (
                       <div className="quiet">{c.note || "Nothing to collect on this platform."}</div>
@@ -168,7 +169,7 @@ export default function Collect({ sessionId, tabKey, facts, onFacts, deviceName,
               </div>
             );
           })}
-          {list.length === 0 && <div className="tools-empty"><p>{profile ? "No command sets for this platform yet." : "Pick or detect the platform to see its command sets."}</p></div>}
+          {list.length === 0 && <div className="tools-empty"><p>{profile ? "No command sets for this platform yet." : "Connect a device, then pick or detect its platform to see the command sets."}</p></div>}
         </div>
       )}
 

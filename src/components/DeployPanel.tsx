@@ -8,6 +8,7 @@ import {
   type DeployReport, type DeployStep, type FirmwareInfo, type Plan, type Template,
 } from "../lib/deploy";
 import { isUnlocked, lock, unlock } from "../lib/lock";
+import { platformProfile, type Profile } from "../lib/platforms";
 import { compareReports, detectDevice, runChecks, stamp, type Change, type CheckReport, type Facts } from "../lib/tools";
 import { CloseIcon, RefreshIcon, SaveIcon } from "./Icons";
 
@@ -79,7 +80,12 @@ export function DeployFlow({ sessionId, tabKey, facts, deviceName, site, environ
   const production = environment === "production";
   const name = facts?.hostname || deviceName;
   const kind: Kind = disruptive || items.some((i) => i.kind === "disruptive") ? "disruptive" : items.some((i) => i.kind === "config") ? "config" : "read-only";
-  const candidate = facts?.os === "junos" || facts?.os === "eos" || facts?.os === "ios-xr";
+  const [profile, setProfile] = useState<Profile | null>(null);
+  useEffect(() => {
+    void platformProfile(facts?.os ?? null).then(setProfile).catch(() => setProfile(null));
+  }, [facts?.os]);
+  // a timed commit exists where the profile has one; the IOS safety reload only on IOS / IOS-XE
+  const candidate = !!profile?.workflow.candidate && !!profile.workflow.commitConfirmed;
   const canIosSafety = facts?.os === "ios" || facts?.os === "ios-xe" || !facts?.os || candidate;
 
   useEffect(() => {

@@ -8,7 +8,7 @@ import SnippetsDialog from "./components/SnippetsDialog";
 import CredentialsDialog from "./components/CredentialsDialog";
 import UnlockDialog from "./components/UnlockDialog";
 import { EMPTY_LOCKER, loadLocker, resolveFor, saveLocker, vaultLock, vaultStatus, vaultTouch, type Locker, type VaultStatus } from "./lib/credentials";
-import ToolsPanel, { type ToolsSection } from "./components/ToolsPanel";
+import ToolsPanel, { detectedOs, type ToolsSection } from "./components/ToolsPanel";
 import CommandPalette, { type PaletteItem } from "./components/CommandPalette";
 import Completions from "./components/Completions";
 import NameDialog from "./components/NameDialog";
@@ -838,6 +838,11 @@ export default function App() {
 
   /* ---------- keyboard ---------- */
 
+  /** On a Linux shell (Cumulus, SONiC bash) Ctrl+Space is set-mark, so the `?` completion must not take it. */
+  function isLinuxShell(t: Tab | null | undefined): boolean {
+    const os = t ? detectedOs(t.key) : null;
+    return os === "cumulus" || os === "sonic";
+  }
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       const modKey = isMac ? e.metaKey : e.ctrlKey;
@@ -853,7 +858,7 @@ export default function App() {
         const t = tabsRef.current[parseInt(e.code.slice(5), 10) - 1];
         if (t) activate(t.key);
       } else if (key === "f6" && split) setFocusSlot((f) => 1 - f);
-      else if (e.ctrlKey && !e.shiftKey && !e.altKey && e.code === "Space") void completeLine();
+      else if (e.ctrlKey && !e.shiftKey && !e.altKey && e.code === "Space" && !isLinuxShell(active)) void completeLine();
       else if (modKey && e.shiftKey && key === "n") void openWindow("").catch((err) => showToast(String(err)));
       else if (modKey && e.shiftKey && key === "p") setPalette({ initial: "" });
       else if (modKey && e.shiftKey && key === "k") setCredentialsOpen(true);

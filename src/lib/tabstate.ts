@@ -25,3 +25,4 @@ export function useTabState<T extends object>(scope: string, tabKey: string, fre
   );
   return [st, update];
 }
+

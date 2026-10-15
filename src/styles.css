@@ -390,6 +390,8 @@ kbd {
 .check-detail .follow .btn { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 11px; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .raw summary { cursor: pointer; color: var(--text-quiet); }
 .raw pre { margin-top: 6px; }
+.tools-intro { margin: 0 0 8px; padding: 8px 10px; border-radius: 6px; background: var(--panel-2, rgba(127,127,127,0.08)); color: var(--text-quiet); font-size: 12px; line-height: 1.45; }
+.tools-intro code { font: 11px ui-monospace, Menlo, Consolas, monospace; }
 .tools-empty { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 30px 20px; color: var(--text-quiet); text-align: center; font-size: 12.5px; }
 .tools-empty svg { width: 28px; height: 28px; opacity: 0.5; }
 .tools-empty p { margin: 0; max-width: 360px; }
