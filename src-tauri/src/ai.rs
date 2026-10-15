@@ -554,11 +554,13 @@ async fn chat(p: &ProviderSpec, base: &str, messages: &[ChatMessage], tools: &[T
 fn strip_thinking(piece: &str, inside: &mut bool) -> String {
     let mut out = String::new();
     let mut rest = piece;
+    let mut closed = false;
     loop {
         if *inside {
             match rest.find("</think>") {
                 Some(i) => {
                     *inside = false;
+                    closed = true;
                     rest = &rest[i + "</think>".len()..];
                 }
                 None => return out,
@@ -572,7 +574,9 @@ fn strip_thinking(piece: &str, inside: &mut bool) -> String {
                 }
                 None => {
                     out.push_str(rest);
-                    return out.trim_start_matches('\n').to_string().replace("\n\n\n", "\n\n");
+                    // blank lines left behind by a closed think block go; a piece that is
+                    // itself a newline between two commands must survive untouched
+                    return if closed { out.trim_start_matches('\n').to_string() } else { out };
                 }
             }
         }
@@ -707,6 +711,10 @@ mod tests {
         assert!(out.ends_with("Answer text"));
         let mut inside = false;
         assert_eq!(strip_thinking("<think>a</think>b", &mut inside), "b");
+        // a token that is only a newline (between two commands of a cli block) is kept
+        assert_eq!(strip_thinking("\n", &mut inside), "\n");
+        assert_eq!(strip_thinking("\nshow", &mut inside), "\nshow");
+        assert_eq!(strip_thinking("<think>a</think>\n\nb", &mut inside), "b");
         assert!(!inside);
     }
 

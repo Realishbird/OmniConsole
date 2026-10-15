@@ -184,7 +184,13 @@ export default function Assistant(props: Props) {
     }
     // tool traffic from old turns is bulky; keep it only for the last two exchanges
     const cutoff = Math.max(0, out.length - 24);
-    return out.map((m, i) => (i < cutoff && m.role === "tool" ? { role: "tool" as const, content: "(earlier output, omitted)", toolCallId: m.toolCallId } : m));
+    return out.map((m, i) => {
+      if (m.role !== "tool") return m;
+      if (i < cutoff) return { role: "tool" as const, content: "(earlier output, omitted)", toolCallId: m.toolCallId };
+      // a refusal from when auto-run was off would teach the model to keep proposing
+      if (autoRun && /^Auto-run is off/.test(m.content)) return { role: "tool" as const, content: "(auto-run was off then; it is on now, so call run_show for read-only commands)", toolCallId: m.toolCallId };
+      return m;
+    });
   }
 
   async function ask(question: string, output = "", outputLabel = "Terminal output", depth = 0, display?: string) {
@@ -213,6 +219,7 @@ export default function Assistant(props: Props) {
     const id = crypto.randomUUID();
     setBusy(id);
     const shown: string[] = [output];
+    let autoRunBlock: { turn: number; block: number } | null = null;
     try {
       let tools = st.noTools ? [] : TOOLS;
       for (let round = 0; round <= MAX_ROUNDS; round++) {
@@ -304,6 +311,13 @@ export default function Assistant(props: Props) {
           ? [{ ...readOnly[0], title: readOnly.length === reviews.length ? "" : "Read-only", items: readOnly.flatMap((r) => r.items).filter((it, i, all) => all.findIndex((x) => x.command === it.command) === i) }]
           : readOnly;
         reply.blocks = [...merged, ...reviews.filter((r) => r.kind !== "read-only")];
+        // with auto-run on, a read-only proposal runs at once (some models propose
+        // instead of calling run_show) and the output comes back for interpretation
+        const ro = reply.blocks.findIndex((b) => b.kind === "read-only" && b.state === "proposed");
+        if (autoRun && ro >= 0 && sessionId && depth < 3 && !stop.current && !reply.blocks[ro].items.some((i) => hasPlaceholder(i.command))) {
+          reply.blocks[ro].title = reply.blocks[ro].title || "Ran on its own";
+          autoRunBlock = { turn: st.turns.indexOf(reply), block: ro };
+        }
       }
     } catch (e) {
       reply.streaming = false;
@@ -314,6 +328,7 @@ export default function Assistant(props: Props) {
       setBusy(null);
       refresh();
     }
+    if (autoRunBlock) await run(autoRunBlock.turn, autoRunBlock.block, false);
   }
 
   function pendingLabel(call: ToolCall): string {
@@ -506,13 +521,13 @@ export default function Assistant(props: Props) {
         </select>
         {provider && <span className="quiet small">{isLocal(provider) ? "local · nothing leaves this computer" : "cloud · shared output is sent"} · secrets redacted{!ai.shareOutput && " · output sharing off"}</span>}
         <span className="grow" />
-        <button
-          className={`btn small${autoRun ? " on" : ""}`}
-          title={autoRun ? "The assistant runs read-only show commands on its own while answering. Click to make it ask first on this device." : "Read-only commands are proposed as cards for you to run. Click to let the assistant run them itself on this device."}
-          onClick={toggleAutoRun}
+        <label
+          className="check small auto-run"
+          title={autoRun ? "On: the assistant runs read-only show commands on its own while answering (this device). Untick to have it propose them for you to run." : "Off: read-only commands are proposed as cards for you to run on this device. Tick to let the assistant run them itself."}
         >
-          {autoRun ? "Runs show commands itself" : "Asks before show commands"}
-        </button>
+          <input type="checkbox" checked={autoRun} onChange={toggleAutoRun} />
+          Auto-run show commands
+        </label>
       </div>
 
       {unlockTyped !== null && (
