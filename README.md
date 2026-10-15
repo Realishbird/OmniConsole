@@ -17,7 +17,17 @@ Every push builds installers for all six platforms. Open the latest run under [A
 | Linux x64 | `OmniConsole-<version>-linux-x64` | `.deb`, `.rpm` or `.AppImage` |
 | Linux ARM64 | `OmniConsole-<version>-linux-arm64` | `.deb`, `.rpm` or `.AppImage` |
 
-The builds are unsigned. Windows SmartScreen and macOS Gatekeeper will ask once; on macOS use right-click → Open the first time.
+The builds are not notarized with Apple or signed with a Windows certificate, so each operating system asks once before the first launch.
+
+**macOS.** The app is ad-hoc signed, so it is not "damaged", but Gatekeeper still blocks apps that Apple has not notarized. Drag OmniConsole to Applications, open it once (it will be refused), then go to System Settings → Privacy & Security, scroll down and click **Open Anyway**. Or clear the download quarantine flag from a terminal:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/OmniConsole.app
+```
+
+If you have an Apple Developer account, the build signs and notarizes the app itself when the repository has these secrets: `APPLE_CERTIFICATE` (base64 of the Developer ID Application .p12), `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD` (an app-specific password) and `APPLE_TEAM_ID`. Notarized builds open without any prompt.
+
+**Windows.** SmartScreen shows "Windows protected your PC"; choose More info → Run anyway.
 
 ## Getting started
 

@@ -193,7 +193,7 @@ async fn chat(p: &ProviderSpec, messages: &[ChatMessage], mut cancel: watch::Rec
             let rest: Vec<Value> = messages.iter().filter(|m| m.role != "system").map(|m| json!({ "role": m.role, "content": m.content })).collect();
             (
                 format!("{base}/v1/messages"),
-                json!({ "model": p.model, "max_tokens": 4096, "stream": true, "temperature": 0.2, "system": system.join("\n\n"), "messages": rest }),
+                json!({ "model": p.model, "max_tokens": 4096, "stream": true, "system": system.join("\n\n"), "messages": rest }),
             )
         }
         _ => (
