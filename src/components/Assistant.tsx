@@ -56,6 +56,9 @@ interface TabAi {
 
 const cache = new Map<string, TabAi>();
 
+/** `<server>`-style placeholders the model left for the engineer to fill in */
+const hasPlaceholder = (c: string) => /<[a-z][\w .\/-]*>/i.test(c);
+
 const KIND_LABEL: Record<Kind, string> = { "read-only": "read-only", config: "configuration change", disruptive: "disruptive" };
 
 export default function Assistant(props: Props) {
@@ -125,7 +128,14 @@ export default function Assistant(props: Props) {
       if (blocks.length) {
         // a newer proposal replaces the read-only cards still waiting from earlier turns
         for (const t of st.turns) for (const b of t.blocks ?? []) if (b.state === "proposed" && b.kind === "read-only") b.state = "superseded";
-        const reviews = await Promise.all(blocks.map(async (b) => {
+        // show commands the model put inside a configuration block are read-only all the same
+        const isShow = (c: string) => /^(show|dir|ping|traceroute|display|get|nv show|net show|cat |ip |sudo (vtysh|ethtool|smonctl|lldpctl|l1-show))/i.test(c);
+        const split = blocks.flatMap((b) => {
+          const shows = b.commands.filter(isShow);
+          const rest = b.commands.filter((c) => !isShow(c));
+          return shows.length && rest.length ? [{ title: "", commands: shows }, { ...b, commands: rest }] : [b];
+        });
+        const reviews = await Promise.all(split.map(async (b) => {
           const items = await classifyCommands(b.commands);
           const kind: Kind = items.some((i) => i.kind === "disruptive") ? "disruptive" : items.some((i) => i.kind === "config") ? "config" : "read-only";
           return { title: b.title, items, kind, state: "proposed" as const, outputs: [], backup: null, depth };
@@ -309,18 +319,19 @@ export default function Assistant(props: Props) {
                     </div>
                     {b.state !== "superseded" && <ol className="review-lines">
                       {b.items.map((it, k) => (
-                        <li key={k} className={it.kind}><code>{it.command}</code>{it.kind !== "read-only" && <span className="reason">{it.reason}</span>}</li>
+                        <li key={k} className={it.kind}><code>{it.command}</code>{hasPlaceholder(it.command) && <span className="reason warn-text">fill in the placeholder first</span>}{it.kind !== "read-only" && <span className="reason">{it.reason}</span>}</li>
                       ))}
                     </ol>}
                     {b.state === "proposed" && (
                       <div className="row">
                         <button className="btn small" onClick={() => void navigator.clipboard.writeText(b.items.map((i) => i.command).join("\n"))}>Copy</button>
                         {b.kind === "read-only" ? (
-                          <button className="btn small primary" disabled={!canRun} onClick={() => void run(ti, bi, false)}>Run on the device</button>
+                          <button className="btn small primary" disabled={!canRun || b.items.some((i) => hasPlaceholder(i.command))} onClick={() => void run(ti, bi, false)}>Run on the device</button>
                         ) : (
-                          <button className="btn small primary" disabled={!canRun} onClick={() => setConfirming({ turn: ti, block: bi, backup: true, reviewed: false, typed: "" })}>Review and apply…</button>
+                          <button className="btn small primary" disabled={!canRun || b.items.some((i) => hasPlaceholder(i.command))} onClick={() => setConfirming({ turn: ti, block: bi, backup: true, reviewed: false, typed: "" })}>Review and apply…</button>
                         )}
                         {!canRun && <span className="quiet small">connect to run</span>}
+                        {canRun && b.items.some((i) => hasPlaceholder(i.command)) && <span className="quiet small">has placeholders: copy and edit it</span>}
                       </div>
                     )}
                     {confirming && confirming.turn === ti && confirming.block === bi && (

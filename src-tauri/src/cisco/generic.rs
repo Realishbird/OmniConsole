@@ -21,10 +21,11 @@ pub fn commands(os: Os, id: &str) -> Vec<&'static str> {
         ("time-sync", Eos) => vec!["show ntp status"],
         ("time-sync", Sonic) => vec!["show ntp"],
         ("time-sync", Cumulus) => vec!["chronyc tracking", "timedatectl"],
-        ("storage", Ios | IosXe) => vec!["dir flash: | include bytes"],
+        // classic IOS rejects a pipe after dir; the totals line is parsed from the plain listing
+        ("storage", Ios | IosXe) => vec!["dir flash:"],
         ("storage", NxOs) => vec!["dir bootflash: | include bytes"],
         ("storage", IosXr) => vec!["dir harddisk: | include bytes"],
-        ("storage", Asa) => vec!["dir | include bytes"],
+        ("storage", Asa) => vec!["dir"],
         ("storage", ArubaOsS) => vec!["show flash"],
         ("storage", ArubaCx) => vec!["show system resource-utilization"],
         ("storage", Junos) => vec!["show system storage"],
@@ -599,9 +600,11 @@ fn optics(text: &str) -> Verdict {
 }
 
 fn uplinks(text: &str) -> Verdict {
-    let named: Vec<&str> = text.lines().filter(|l| re(r"(?i)\b(uplink|core|dist|agg|trunk to|to-|->|wan|isp|mlag|peer|vsx|isl)\b").is_match(l)).collect();
+    let looks_uplink = re(r"(?i)\b(uplink|core|dist|agg|trunk to|to-|->|wan|isp|mlag|peer|vsx|isl|connected to|link to|switch|swt|sw\d|-sw\b|rtr|router|fw|firewall|gateway)\b");
+    let not_uplink = re(r"(?i)\b(nothing|unused|spare|free|empty|future|reserved)\b");
+    let named: Vec<&str> = text.lines().filter(|l| looks_uplink.is_match(l) && !not_uplink.is_match(l) && !re(r"(?i)^\s*(interface|port|name|-)").is_match(l)).collect();
     if named.is_empty() {
-        return Verdict::new(Status::NotApplicable, "No interfaces described as uplinks (name them 'uplink' or 'core' in the description)");
+        return Verdict::new(Status::NotApplicable, "No interfaces described as uplinks (name them 'uplink', 'core' or 'connected to <switch>' in the description)");
     }
     let down: Vec<String> = named.iter().filter(|l| re(r"(?i)\b(down|notconnect|admin|disabled|notconn)\b").is_match(l)).map(|l| l.trim_end().to_string()).collect();
     if !down.is_empty() {
@@ -712,6 +715,16 @@ mod tests {
         assert_eq!(v.status, Status::Warning);
         let v = evaluate(Os::Cumulus, "storage", &out("df -h", "Filesystem Size Used Avail Use% Mounted on\n/dev/sda1   7G  6.7G  200M  96% /\ntmpfs       1G    0    1G   0% /run\n"));
         assert_eq!(v.status, Status::Critical);
+    }
+
+    #[test]
+    fn uplinks_from_descriptions_and_ios_dir() {
+        let v = evaluate(Os::Ios, "uplinks", &out("show interfaces description", "Interface  Status  Protocol Description\nGi0/1      up      up       ** CONNECTED TO MT-SWT **\nGi0/2      down    down     ** CONNECTED TO NOTHING/BACKUP **\nFa0/1      up      up\n"));
+        assert_eq!(v.status, Status::Healthy, "{}", v.summary);
+        assert_eq!(v.evidence.len(), 1);
+        let v = evaluate(Os::Ios, "storage", &out("dir flash:", "Directory of flash:/\n    2  -rwx     4120  Mar 1 1993 00:01:35 +00:00  config.text\n\n32514048 bytes total (11290624 bytes free)\n"));
+        assert_eq!(v.status, Status::Healthy, "{}", v.summary);
+        assert!(v.summary.contains("65%"), "{}", v.summary);
     }
 
     #[test]

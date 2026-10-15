@@ -268,10 +268,19 @@ fn environment(kind: &str, os: Os, out: &Outputs) -> Verdict {
     };
     let section = match kind {
         "Temperature" => r"(?i)temp|thermal|inlet|outlet|hotspot",
-        "Power supplies" => r"(?i)power|PS\d|psu|PWR|^\s*\d[AB]\s",
+        "Power supplies" => r"(?i)power|PS\d|psu|PWR|^\s*\d[AB]\s|built-in|^\s*\d+\s+\S+.*\b(Good|Bad|OK|Faulty|Not Present)\b",
         _ => r"(?i)fan",
     };
-    let lines: Vec<String> = grep(text, section).into_iter().filter(|l| !l.trim().is_empty()).collect();
+    // Catalyst `show env all` lists the RPS after its own "SW Status RPS Name" header;
+    // an RPS that is not present is the normal case, not a missing supply
+    let mut in_rps = false;
+    let text: String = text.lines().filter(|l| {
+        if re(r"(?i)^\s*SW\s+Status\s+RPS|^\s*RPS\b").is_match(l) { in_rps = true; return kind != "Power supplies"; }
+        if re(r"(?i)^\s*SW\s+PID|^\s*(FAN|TEMPERATURE|SYSTEM)").is_match(l) { in_rps = false; }
+        !(in_rps && kind == "Power supplies")
+    }).collect::<Vec<_>>().join("\n");
+    let text = text.as_str();
+    let lines: Vec<String> = grep(text, section).into_iter().filter(|l| !l.trim().is_empty() && !re(r"(?i)^\s*SW\s+PID|^\s*-+").is_match(l)).collect();
     if lines.is_empty() {
         return Verdict::new(Status::NotCollected, format!("{kind}: nothing reported")).evidence(grep(text, ".").into_iter().take(10).collect());
     }
@@ -866,8 +875,17 @@ pub fn evaluate(os: Os, ids: &[String], tier: Option<Tier>, out: &Outputs) -> Ve
             let mut v = if commands.is_empty() {
                 Verdict::new(Status::Unsupported, format!("{} cannot be checked on {}", d.title, os.label()))
             } else if commands.iter().all(|c| matches!(out.get(c), Some(Err(_)) | None)) {
-                let why = commands.iter().find_map(|c| out.get(c).and_then(|r| r.as_ref().err()).cloned()).unwrap_or_else(|| "the commands did not run".into());
-                Verdict::new(Status::NotCollected, format!("Not collected: {why}"))
+                let errors: Vec<String> = commands.iter().filter_map(|c| out.get(c).and_then(|r| r.as_ref().err()).cloned()).collect();
+                let all_rejected = !errors.is_empty() && errors.iter().all(|e| e.contains("rejected"));
+                // a feature the device does not have (no stack, no PoE, no optics) is
+                // not a collection failure; anything else that failed is not collected
+                let optional = matches!(d.id, "stack" | "redundancy" | "poe" | "optics" | "port-channels" | "spanning-tree" | "routing" | "overlay" | "neighbors" | "uplinks" | "vlans" | "mac-table");
+                if all_rejected && optional {
+                    Verdict::new(Status::NotApplicable, format!("{}: the device has no such command", d.title)).evidence(errors)
+                } else {
+                    let why = errors.first().cloned().unwrap_or_else(|| "the commands did not run".into());
+                    Verdict::new(Status::NotCollected, format!("Not collected: {why}"))
+                }
             } else if os.is_cisco() {
                 (d.evaluate)(os, out)
             } else {
@@ -974,6 +992,22 @@ mod tests {
         o.insert("show etherchannel summary".into(), Ok("Number of channel-groups in use: 1\nGroup  Port-channel  Protocol    Ports\n------+-------------+-----------+-----\n1      Po1(SD)          -        \n".into()));
         let v = port_channels(Os::Ios, &o);
         assert_eq!(v.status, Status::Critical, "{}", v.summary);
+    }
+
+    #[test]
+    fn catalyst_env_all_power() {
+        let mut out = Outputs::new();
+        out.insert("show env all".into(), Ok("FAN is OK\nTEMPERATURE is OK\nSW  PID                 Serial#     Status           Sys Pwr  PoE Pwr  Watts\n--  ------------------  ----------  ---------------  -------  -------  -----\n 1  Built-in                        Good             Good     Good     370\nSW  Status          RPS Name          RPS Serial#  RPS Port#\n--  -------------   ----------------  -----------  ---------\n 1  Not Present     <>\n".into()));
+        let v = environment("Power supplies", Os::Ios, &out);
+        assert_eq!(v.status, Status::Healthy, "{} {:?}", v.summary, v.evidence);
+        let v = environment("Fans", Os::Ios, &out);
+        assert_eq!(v.status, Status::Healthy);
+        // a feature the device does not have is not a collection failure
+        let mut o = Outputs::new();
+        o.insert("show switch".into(), Err("the device rejected `show switch`: % Invalid input".into()));
+        o.insert("show switch stack-ports".into(), Err("the device rejected `show switch stack-ports`: % Invalid input".into()));
+        let r = evaluate(Os::Ios, &["stack".into()], None, &o);
+        assert_eq!(r[0].status, Status::NotApplicable);
     }
 
     #[test]
