@@ -1,5 +1,5 @@
 // Quick connect box: "ssh admin@10.0.0.1", "10.0.0.1:2222", "telnet 10.0.0.5 2001",
-// "COM3 115200", "serial /dev/ttyUSB0".
+// "COM3 115200", "serial /dev/ttyUSB0", "rdp 10.0.0.9", "vnc host:5901".
 import { DEFAULT_PORT, type Protocol } from "./types";
 
 export interface QuickTarget {
@@ -19,7 +19,7 @@ export function parseQuick(input: string): QuickTarget | null {
 
   let protocol: Protocol | null = null;
   const first = words[0].toLowerCase();
-  if (first === "ssh" || first === "telnet" || first === "serial") {
+  if (first === "ssh" || first === "telnet" || first === "serial" || first === "rdp" || first === "vnc") {
     protocol = first;
     words.shift();
   }

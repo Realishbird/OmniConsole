@@ -10,6 +10,7 @@ interface Props {
   onGroupBy: (g: GroupBy) => void;
   onResize: (width: number) => void;
   onConnect: (device: Device) => void;
+  onConnectWindow: (device: Device) => void;
   onAdd: (preset?: Partial<Device>) => void;
   onEdit: (device: Device) => void;
   onDuplicate: (device: Device) => void;
@@ -17,6 +18,7 @@ interface Props {
   onToggleFavorite: (device: Device) => void;
   onImport: () => void;
   onExport: () => void;
+  onCredentials: () => void;
 }
 
 interface Menu {
@@ -238,6 +240,7 @@ export default function Sidebar(props: Props) {
             {menu.device && (
               <>
                 <button onClick={() => props.onConnect(menu.device!)}><b>Connect</b></button>
+                {menu.device.protocol !== "rdp" && menu.device.protocol !== "vnc" && <button onClick={() => props.onConnectWindow(menu.device!)}>Connect in a new window</button>}
                 <button onClick={() => props.onToggleFavorite(menu.device!)}>{menu.device.favorite ? "Remove from favorites" : "Add to favorites"}</button>
                 <button onClick={() => props.onEdit(menu.device!)}>Edit…</button>
                 <button onClick={() => props.onDuplicate(menu.device!)}>Duplicate…</button>
@@ -256,6 +259,8 @@ export default function Sidebar(props: Props) {
                 <hr />
                 <button onClick={props.onImport}>Import devices (JSON or CSV)…</button>
                 <button onClick={props.onExport}>Export devices…</button>
+                <hr />
+                <button onClick={props.onCredentials}>Credentials…</button>
               </>
             ) : (
               <button onClick={() => props.onAdd(presetFor(menu.group))}>

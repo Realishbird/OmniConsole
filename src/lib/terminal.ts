@@ -54,7 +54,8 @@ export class TerminalSession {
   readonly search: SearchAddon;
   bookmarks: Bookmark[] = [];
   private fit: FitAddon;
-  private backendId: string | null = null;
+  /** the Rust session id, once the connection is open */
+  public backendId: string | null = null;
   private opened = false;
   private disposed = false;
   private generation = 0; // output of an older connection (before reconnect) is dropped
@@ -92,6 +93,16 @@ export class TerminalSession {
     this.term.loadAddon(this.fit);
     this.term.loadAddon(this.search);
 
+    // Ctrl+V (Cmd+V on macOS) pastes, like Windows Terminal and PuTTY; a
+    // literal ^V is rare enough on network gear that paste wins.
+    this.term.attachCustomKeyEventHandler((e) => {
+      const mod = navigator.platform.toLowerCase().includes("mac") ? e.metaKey : e.ctrlKey;
+      if (e.type === "keydown" && mod && !e.altKey && e.key.toLowerCase() === "v") {
+        if (!e.shiftKey) void this.pasteClipboard();
+        return false;
+      }
+      return true;
+    });
     this.term.onData((data) => {
       if (!this.backendId) return;
       if (data.includes("\r")) this.captureCommand();
@@ -184,10 +195,27 @@ export class TerminalSession {
     return this.term.getSelection();
   }
 
+  /** The last `count` non-empty lines on screen and in scrollback. */
+  recentOutput(count: number): string {
+    const buf = this.term.buffer.active;
+    const lines: string[] = [];
+    for (let i = buf.baseY + buf.cursorY; i >= 0 && lines.length < count; i--) {
+      const text = buf.getLine(i)?.translateToString(true) ?? "";
+      if (text.trim() || lines.length) lines.unshift(text);
+    }
+    return lines.join("\n");
+  }
+
   /** The line the cursor is on, as plain text. */
   private cursorLine(): string {
     const buf = this.term.buffer.active;
     return buf.getLine(buf.baseY + buf.cursorY)?.translateToString(true) ?? "";
+  }
+
+  /** What is typed after the device prompt on the cursor line, if at a prompt. */
+  currentCommand(): string | null {
+    const p = parsePrompt(this.cursorLine());
+    return p ? p.command : null;
   }
 
   /** Enter was pressed: record what was typed after the device prompt. */

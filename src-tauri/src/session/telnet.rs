@@ -98,7 +98,7 @@ impl Telnet {
                     if b == IAC {
                         State::SubIac
                     } else {
-                        self.sub.push(b);
+                        if self.sub.len() < 1024 { self.sub.push(b); }
                         State::Sub
                     }
                 }
@@ -112,7 +112,7 @@ impl Telnet {
                         }
                         State::Data
                     } else {
-                        self.sub.push(b);
+                        if self.sub.len() < 1024 { self.sub.push(b); }
                         State::Sub
                     }
                 }
@@ -145,6 +145,10 @@ pub async fn run(spec: &ConnectSpec, io: &Io, mut input: mpsc::UnboundedReceiver
     io.status("connected", format!("Telnet {host_port}"));
 
     let mut t = Telnet { state: State::Data, sub: Vec::new(), naws: false, cols: spec.cols, rows: spec.rows };
+    let resolved = spec.device_id.as_deref().map(|id| crate::credentials::resolve(&io.config_dir, id)).unwrap_or_default();
+    let username = resolved.username.clone().filter(|_| !resolved.source.is_empty()).unwrap_or_else(|| spec.username.clone());
+    let mut login = spec.auto_login.then(|| super::autologin::AutoLogin::new(&username));
+    let mut password = spec.password.clone().or(resolved.password.clone());
     let mut buf = vec![0u8; 16 * 1024];
     loop {
         tokio::select! {
@@ -161,6 +165,18 @@ pub async fn run(spec: &ConnectSpec, io: &Io, mut input: mpsc::UnboundedReceiver
                 }
                 if !reply.is_empty() {
                     stream.write_all(&reply).await?;
+                }
+                if let Some(l) = login.as_mut() {
+                    match l.feed(&data, password.as_deref()) {
+                        super::autologin::Reply::Send(bytes) => stream.write_all(&encode_input(&bytes)).await?,
+                        super::autologin::Reply::NeedPassword => {
+                            if let Some(p) = io.ask("password", format!("Password for {}", spec.host), None, false).await {
+                                password = Some(p.clone());
+                                stream.write_all(&encode_input(&l.password(&p))).await?;
+                            }
+                        }
+                        super::autologin::Reply::None => {}
+                    }
                 }
             }
             cmd = input.recv() => match cmd {

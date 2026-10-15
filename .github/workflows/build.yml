@@ -69,6 +69,35 @@ jobs:
         working-directory: src-tauri
         run: cargo test
 
+      - name: Apple signing and notarization (only when the secrets exist)
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          # Tauri reads these variables itself. Without them it falls back to the
+          # ad-hoc identity ("-") in tauri.conf.json, which keeps Gatekeeper from
+          # reporting the app as damaged.
+          if [ -n "$APPLE_CERTIFICATE" ] && [ -n "$APPLE_SIGNING_IDENTITY" ]; then
+            for v in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY; do
+              echo "$v=${!v}" >> "$GITHUB_ENV"
+            done
+            echo "Developer ID signing enabled"
+            if [ -n "$APPLE_ID" ] && [ -n "$APPLE_PASSWORD" ] && [ -n "$APPLE_TEAM_ID" ]; then
+              for v in APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+                echo "$v=${!v}" >> "$GITHUB_ENV"
+              done
+              echo "Notarization enabled"
+            fi
+          else
+            echo "No Apple certificate configured; using ad-hoc signing"
+          fi
+
       - name: Build
         shell: bash
         run: |
@@ -76,14 +105,31 @@ jobs:
           if [ -n "${{ matrix.bundles }}" ]; then args="$args --bundles ${{ matrix.bundles }}"; fi
           npx tauri build $args
 
+      - name: Name the installers by version and platform
+        id: name
+        shell: bash
+        run: |
+          version=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          out=installers
+          mkdir -p "$out"
+          bundle="src-tauri/target/${{ matrix.target }}/release/bundle"
+          for f in "$bundle"/nsis/*.exe "$bundle"/msi/*.msi "$bundle"/dmg/*.dmg "$bundle"/deb/*.deb "$bundle"/rpm/*.rpm "$bundle"/appimage/*.AppImage; do
+            [ -e "$f" ] || continue
+            ext="${f##*.}"
+            cp "$f" "$out/OmniConsole-$version-${{ matrix.name }}.$ext"
+          done
+          ls -l "$out"
+
+      - name: Verify the macOS signature
+        if: runner.os == 'macOS'
+        run: |
+          app=$(ls -d src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app | head -1)
+          codesign --verify --deep --strict --verbose=2 "$app"
+          codesign -dv "$app" 2>&1 | grep -E "^(Identifier|Signature|TeamIdentifier|Authority)" || true
+
       - uses: actions/upload-artifact@v4
         with:
-          name: OmniConsole-${{ matrix.name }}
+          name: OmniConsole-${{ steps.name.outputs.version }}-${{ matrix.name }}
           if-no-files-found: error
-          path: |
-            src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*.exe
-            src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.msi
-            src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
-            src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
-            src-tauri/target/${{ matrix.target }}/release/bundle/rpm/*.rpm
-            src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
+          path: installers/*

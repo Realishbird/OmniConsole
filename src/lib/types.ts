@@ -1,4 +1,6 @@
-export type Protocol = "ssh" | "telnet" | "serial";
+export type Protocol = "ssh" | "telnet" | "serial" | "rdp" | "vnc";
+/** protocols that open in the system's own client instead of a tab */
+export const EXTERNAL: Protocol[] = ["rdp", "vnc"];
 export type AuthMethod = "password" | "key" | "agent";
 export type Environment = "" | "production" | "staging" | "lab" | "customer";
 export type Parity = "none" | "odd" | "even";
@@ -24,6 +26,8 @@ export interface Device {
   lastConnected?: number | null;
   notes: string;
 
+  /** credential profile id; empty = this device's own saved password, or a site/customer default */
+  credentialId: string;
   authMethod: AuthMethod;
   keyPath: string;
   jumpDeviceId: string;
@@ -38,6 +42,8 @@ export interface Device {
 
   autoReconnect: boolean;
   logSession: boolean;
+  /** Telnet and serial: answer the Username/Password questions */
+  autoLogin: boolean;
 }
 
 export interface JumpSpec {
@@ -57,10 +63,13 @@ export interface ConnectSpec {
   username: string;
   deviceId?: string;
   password?: string;
+  autoLogin?: boolean;
   authMethod: AuthMethod;
   keyPath: string;
   jump?: JumpSpec | null;
   keepalive: number;
+  /** password prompts before the connection gives up */
+  retryLimit?: number;
   serialPort: string;
   baud: number;
   dataBits: number;
@@ -98,7 +107,8 @@ export interface HistoryEntry {
   at: number;
 }
 
-export const DEFAULT_PORT: Record<Protocol, number> = { ssh: 22, telnet: 23, serial: 0 };
+export const DEFAULT_PORT: Record<Protocol, number> = { ssh: 22, telnet: 23, serial: 0, rdp: 3389, vnc: 5900 };
+export const PROTOCOL_LABEL: Record<Protocol, string> = { ssh: "SSH", telnet: "Telnet", serial: "Serial", rdp: "RDP", vnc: "VNC" };
 
 export const ENVIRONMENTS: { value: Environment; label: string; short: string; color: string }[] = [
   { value: "", label: "Not set", short: "", color: "" },
@@ -131,6 +141,7 @@ export function newDevice(protocol: Protocol = "ssh", site = ""): Device {
     favorite: false,
     lastConnected: null,
     notes: "",
+    credentialId: "",
     authMethod: "password",
     keyPath: "",
     jumpDeviceId: "",
@@ -143,6 +154,7 @@ export function newDevice(protocol: Protocol = "ssh", site = ""): Device {
     flowControl: "none",
     autoReconnect: false,
     logSession: false,
+    autoLogin: false,
   };
 }
 

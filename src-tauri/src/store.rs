@@ -53,6 +53,10 @@ pub struct Device {
     #[serde(default)]
     pub notes: String,
 
+    /// credential profile (credentials.json); empty = the device's own saved password or a site/customer default
+    #[serde(default)]
+    pub credential_id: String,
+
     // SSH
     /// "password" | "key" | "agent"
     #[serde(default = "default_auth")]
@@ -86,6 +90,8 @@ pub struct Device {
     pub auto_reconnect: bool,
     #[serde(default)]
     pub log_session: bool,
+    #[serde(default)]
+    pub auto_login: bool,
 }
 
 fn default_auth() -> String {
@@ -150,7 +156,7 @@ pub fn save_devices(dir: &Path, devices: &[Device]) -> Result<()> {
 /*
  *  small app data files the UI owns (snippets, history, settings)
  */
-const DATA_KINDS: &[&str] = &["snippets", "history", "settings", "workspace"];
+const DATA_KINDS: &[&str] = &["snippets", "history", "settings", "workspace", "audit", "checklists"];
 
 fn data_path(dir: &Path, kind: &str) -> Result<PathBuf> {
     if !DATA_KINDS.contains(&kind) {
@@ -168,7 +174,21 @@ pub fn data_load(dir: &Path, kind: &str) -> Result<serde_json::Value> {
 }
 
 pub fn data_save(dir: &Path, kind: &str, value: &serde_json::Value) -> Result<()> {
+    // the audit trail keeps the commands that ran; template secrets and
+    // type-7 passwords in them are masked before they touch disk
+    let redacted;
+    let value = if kind == "audit" { redacted = redact_json(value.clone()); &redacted } else { value };
     write_atomic(&data_path(dir, kind)?, &serde_json::to_string_pretty(value)?)
+}
+
+/// Mask secrets in every string of a JSON value.
+pub fn redact_json(value: serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::String(s) => serde_json::Value::String(crate::redact::text(&s)),
+        serde_json::Value::Array(a) => serde_json::Value::Array(a.into_iter().map(redact_json).collect()),
+        serde_json::Value::Object(o) => serde_json::Value::Object(o.into_iter().map(|(k, v)| (k, redact_json(v))).collect()),
+        other => other,
+    }
 }
 
 /*
@@ -192,14 +212,18 @@ pub fn export_devices(devices: &[Device]) -> Result<String> {
 /// OmniConsole JSON (file or bare array) or CSV with a header row.
 pub fn parse_import(text: &str) -> Result<Vec<Device>> {
     let trimmed = text.trim_start_matches('\u{feff}').trim();
-    if trimmed.starts_with('{') {
+    let devices = if trimmed.starts_with('{') {
         let file: ExportFile = serde_json::from_str(trimmed).context("not an OmniConsole export")?;
-        return Ok(file.devices);
-    }
-    if trimmed.starts_with('[') {
-        return Ok(serde_json::from_str(trimmed)?);
-    }
-    parse_csv(trimmed)
+        file.devices
+    } else if trimmed.starts_with('[') {
+        serde_json::from_str(trimmed)?
+    } else {
+        parse_csv(trimmed)?
+    };
+    // an imported list never picks a saved credential profile on its own: the
+    // user binds one after looking at the device, so a crafted file cannot
+    // point a stored password at a host of its choosing
+    Ok(devices.into_iter().map(|mut d| { d.credential_id = "-".into(); d }).collect())
 }
 
 fn csv_fields(line: &str) -> Vec<String> {
@@ -354,23 +378,30 @@ pub fn secret_delete(name: &str) -> Result<()> {
 /// Only these secret names may be used, so the UI cannot read other
 /// applications' keychain entries.
 pub fn secret_name(kind: &str, device_id: &str) -> Result<String> {
+    // ISE API credentials are keyed by host name, not by a saved device
+    if kind == "ise-api" {
+        let host = device_id.trim().to_lowercase();
+        if host.is_empty() || host.len() > 253 || !host.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':' | '_' | '[' | ']')) {
+            bail!("bad host name");
+        }
+        return Ok(format!("ise-api/{host}"));
+    }
     if uuid::Uuid::parse_str(device_id).is_err() {
         bail!("bad device id");
     }
     match kind {
         "password" => Ok(format!("device/{device_id}")),
         "passphrase" => Ok(format!("passphrase/{device_id}")),
+        // AI provider API keys, keyed by the provider id
+        "apikey" => Ok(format!("ai/{device_id}")),
+        // credential locker profiles, keyed by the profile id
+        "cred-password" => Ok(format!("cred/{device_id}")),
+        "cred-enable" => Ok(format!("cred-enable/{device_id}")),
+        "cred-passphrase" => Ok(format!("cred-passphrase/{device_id}")),
         _ => bail!("unknown secret kind {kind}"),
     }
 }
 
-pub fn password_get(device_id: &str) -> Option<String> {
-    secret_get(&format!("device/{device_id}"))
-}
-
-pub fn passphrase_get(device_id: &str) -> Option<String> {
-    secret_get(&format!("passphrase/{device_id}"))
-}
 
 #[cfg(test)]
 mod tests {

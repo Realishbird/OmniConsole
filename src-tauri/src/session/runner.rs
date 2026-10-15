@@ -1,0 +1,415 @@
+//! Runs a command on a live session and collects its output: the bytes the
+//! device sends are copied into a buffer until the prompt comes back, with
+//! `--More--` pages answered automatically. The user still sees everything
+//! in the terminal; nothing is hidden.
+
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use anyhow::{anyhow, bail, Result};
+use regex::Regex;
+use serde::{Deserialize, Serialize};
+use tokio::sync::Notify;
+
+/// Shared between the session task (which feeds output) and the runner.
+#[derive(Default)]
+pub struct Capture {
+    buf: Mutex<Vec<u8>>,
+    active: Mutex<bool>,
+    changed: Notify,
+}
+
+impl Capture {
+    pub fn feed(&self, bytes: &[u8]) {
+        if *self.active.lock().unwrap() {
+            self.buf.lock().unwrap().extend_from_slice(bytes);
+            self.changed.notify_one();
+        }
+    }
+
+    pub fn start(&self) {
+        self.buf.lock().unwrap().clear();
+        *self.active.lock().unwrap() = true;
+    }
+
+    pub fn stop(&self) -> Vec<u8> {
+        *self.active.lock().unwrap() = false;
+        std::mem::take(&mut *self.buf.lock().unwrap())
+    }
+
+    pub fn text(&self) -> String {
+        String::from_utf8_lossy(&self.buf.lock().unwrap()).into_owned()
+    }
+}
+
+/// Cisco prompts: `sw1#`, `sw1>`, `sw1(config-if)#`, `RP/0/RSP0/CPU0:r1#`,
+/// ASA `fw/pri/act#`; also plain shells ending in `$`.
+pub fn prompt_regex() -> &'static Regex {
+    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    // also AireOS "(Cisco Controller) >" and ArubaOS "(wlc1) [mynode] #"
+    RE.get_or_init(|| Regex::new(r"(?m)^(?:\([^()\n]{1,40}\) ?(?:\[[^\]\n]{1,24}\] ?)?|[A-Za-z0-9][\w.\-/:@~]{0,62}(?:\([\w\-.]+\))?)[#>$] ?$").unwrap())
+}
+
+fn more_regex() -> &'static Regex {
+    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"(?i)-+ ?\(?more(?: \d+%)?\)? ?-+(?: or \(q\)uit)?\s*$|<--- More --->\s*$|Press any key to continue|lines \d+-\d+(?:/\d+)?(?: \(END\))?\s*$|(?:^|\n):$").unwrap())
+}
+
+/// A `less`-style pager that reached the end of the output and waits for `q`
+/// (ISE ADE-OS `show logging`, Linux `journalctl` without `--no-pager`).
+fn end_regex() -> &'static Regex {
+    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"\(END\)\s*$").unwrap())
+}
+
+/// A password question from the device itself, not the command's output:
+/// `[sudo] password for cumulus:`, `Password:`, `admin@10.0.0.1's password:`.
+/// A probe never answers these; the command is aborted instead.
+pub fn password_regex() -> &'static Regex {
+    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"(?im)^(?:\[sudo\] password for \S+|.*password(?: for \S+)?|passphrase for .*|enter .*passphrase.*):\s*$").unwrap())
+}
+
+/// Remove escape sequences, carriage returns and backspaces.
+pub fn strip_controls(raw: &str) -> String {
+    static ESC: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let esc = ESC.get_or_init(|| Regex::new(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b[()][A-Za-z0-9]|\x1b[=>]").unwrap());
+    let text = esc.replace_all(raw, "");
+    let mut out = String::with_capacity(text.len());
+    // a carriage return moves back to column 0 and later text overwrites,
+    // which is how the pager wipes " --More-- "
+    let mut line: Vec<char> = Vec::new();
+    let mut col = 0usize;
+    let put = |line: &mut Vec<char>, col: &mut usize, c: char| {
+        if *col < line.len() {
+            line[*col] = c;
+        } else {
+            line.push(c);
+        }
+        *col += 1;
+    };
+    for ch in text.chars() {
+        match ch {
+            '\x08' => col = col.saturating_sub(1),
+            '\r' => col = 0,
+            '\n' => {
+                let l: String = line.iter().collect();
+                out.push_str(l.trim_end());
+                out.push('\n');
+                line.clear();
+                col = 0;
+            }
+            c if c.is_control() && c != '\t' => {}
+            c => put(&mut line, &mut col, c),
+        }
+    }
+    let line: String = line.iter().collect();
+    out.push_str(line.trim_end());
+    out
+}
+
+/// `strip_controls` plus the pager's own text removed.
+pub fn clean(raw: &str) -> String {
+    let out = strip_controls(raw);
+    // leftover pager prompts on their own line
+    static MORE_LINE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let more_line = MORE_LINE.get_or_init(|| Regex::new(r"(?m)^\s*-+ ?\(?[Mm]ore(?: \d+%)?\)? ?-+\s*$\n?|^<--- More --->\s*$\n?|^\s*(?:lines \d+-\d+(?:/\d+)? ?)?\(END\)\s*$\n?|^\s*lines \d+-\d+(?:/\d+)?\s*$\n?").unwrap());
+    more_line.replace_all(&out, "").into_owned()
+}
+
+/// The line a device prints when it did not understand the command, if any:
+/// Cisco `% Invalid input`, ADE-OS and Junos `syntax error`, Aruba `Invalid
+/// input:`, a Linux shell's `command not found`. Only the first lines after
+/// the echo count, so a log line quoting an error is not a rejection.
+pub fn rejection(text: &str, command: &str) -> Option<String> {
+    let body = trim_echo_and_prompt(text, command);
+    body.lines().map(str::trim).filter(|l| !l.is_empty()).take(3).find(|l| {
+        l.starts_with("% Invalid input") || l.starts_with("% Incomplete command") || l.starts_with("% Ambiguous command")
+            || l.starts_with("% Unknown command") || l.starts_with("% Unrecognized command") || l.starts_with("% Bad IP address")
+            || l.starts_with("syntax error") || l.starts_with("Invalid input:") || l.starts_with("Invalid command")
+            || l.starts_with("Unknown command") || l.starts_with("Error: Unrecognized command")
+            || l.ends_with(": command not found") || l.ends_with(": not found") || l.starts_with("ERROR: % Invalid")
+    }).map(|l| l.to_string())
+}
+
+/// Strip the echoed command from the top and the prompt from the bottom.
+fn trim_echo_and_prompt(text: &str, command: &str) -> String {
+    let mut lines: Vec<&str> = text.lines().collect();
+    while lines.last().is_some_and(|l| l.trim().is_empty()) {
+        lines.pop();
+    }
+    if lines.last().is_some_and(|l| prompt_regex().is_match(l.trim_end())) {
+        lines.pop();
+    }
+    let cmd = command.trim();
+    let mut start = 0;
+    for (i, l) in lines.iter().enumerate().take(3) {
+        let l = l.trim();
+        if l.is_empty() {
+            continue;
+        }
+        // "sw1#show version" or just "show version" (serial echoes without the prompt)
+        if l.ends_with(cmd) || cmd.starts_with(l) {
+            start = i + 1;
+        }
+        break;
+    }
+    lines[start..].join("\n").trim_matches('\n').to_string()
+}
+
+/// How to answer the questions a command asks (`[confirm]`, `[yes/no]`,
+/// `Destination filename [x]?`). Only reviewed deployments use this.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct Answers {
+    /// "yes" or "no" for [yes/no] questions (saving before a reload, for one)
+    pub yes_no: YesNo,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum YesNo {
+    Yes,
+    No,
+}
+
+fn question_regex() -> &'static Regex {
+    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"(?i)(\[confirm\]\s*$|\[yes/no\]:?\s*$|\(yes/no\)\??\s*\[?\w*\]?:?\s*$|\[y/n\]:?\s*$|\(y/n\)\??\s*\[?\w*\]?:?\s*$|\[[^\]]*\]\?\s*$|\?\s*$)").unwrap())
+}
+
+/// The answer to a question line, with a trailing CR.
+fn answer_for(line: &str, answers: Answers) -> Vec<u8> {
+    let l = line.to_lowercase();
+    if l.contains("[yes/no]") || l.contains("(yes/no)") {
+        match answers.yes_no { YesNo::Yes => b"yes\r".to_vec(), YesNo::No => b"no\r".to_vec() }
+    } else if l.contains("[y/n]") || l.contains("(y/n)") {
+        match answers.yes_no { YesNo::Yes => b"y\r".to_vec(), YesNo::No => b"n\r".to_vec() }
+    } else {
+        b"\r".to_vec()
+    }
+}
+
+pub struct Runner<'a> {
+    pub capture: &'a Arc<Capture>,
+    pub send: &'a (dyn Fn(Vec<u8>) + Send + Sync),
+}
+
+impl Runner<'_> {
+    /// Send `command` and wait for the prompt. `timeout` bounds the whole
+    /// command; a device that keeps printing resets the quiet timer.
+    #[cfg(test)]
+    pub async fn run(&self, command: &str, timeout: Duration) -> Result<String> {
+        self.run_with(command, timeout, None).await
+    }
+
+    /// `run`, answering the command's questions when `answers` is given.
+    pub async fn run_with(&self, command: &str, timeout: Duration, answers: Option<Answers>) -> Result<String> {
+        self.capture.start();
+        (self.send)(format!("{}\r", command.trim()).into_bytes());
+        let deadline = tokio::time::Instant::now() + timeout;
+        let mut quiet_since = tokio::time::Instant::now();
+        let mut seen_len = 0usize;
+        let mut answered_at = 0usize;
+        let result = loop {
+            let text = self.capture.text();
+            if text.len() != seen_len {
+                seen_len = text.len();
+                quiet_since = tokio::time::Instant::now();
+                let tail: String = text.chars().rev().take(200).collect::<Vec<_>>().into_iter().rev().collect();
+                // pager text must survive here, so no clean()
+                let tail = strip_controls(&tail);
+                if end_regex().is_match(tail.trim_end()) {
+                    (self.send)(b"q".to_vec());
+                } else if more_regex().is_match(tail.trim_end()) {
+                    (self.send)(b" ".to_vec());
+                } else if tail.lines().last().is_some_and(|l| prompt_regex().is_match(l.trim_end())) && text.contains('\n') {
+                    break Ok(());
+                }
+            } else if quiet_since.elapsed() > Duration::from_millis(700) && text.lines().last().is_some_and(|l| password_regex().is_match(strip_controls(l).trim_end())) {
+                // the command wants a password (sudo, a nested ssh, an enable
+                // prompt): abort it so the next command is never typed into
+                // the password field, and report it
+                (self.send)(vec![0x03]);
+                tokio::time::sleep(Duration::from_millis(400)).await;
+                break Err(anyhow!("`{command}` asked for a password"));
+            } else if let (Some(a), true) = (answers, quiet_since.elapsed() > Duration::from_millis(700) && seen_len > answered_at) {
+                // the device went quiet on a question: answer it once
+                let tail = strip_controls(&text);
+                let last = tail.lines().last().unwrap_or("").trim_end();
+                if question_regex().is_match(last) && !prompt_regex().is_match(last) {
+                    (self.send)(answer_for(last, a));
+                    answered_at = seen_len;
+                    quiet_since = tokio::time::Instant::now();
+                }
+            } else if quiet_since.elapsed() > Duration::from_millis(2500) {
+                // no prompt seen but the device went quiet (a prompt we do not recognize)
+                let tail = strip_controls(&text);
+                let last = tail.lines().last().unwrap_or("").trim_end();
+                // a bare ":" is less waiting mid-file, not a prompt
+                if tail.trim_end().ends_with(['#', '>', '$', ':']) && !password_regex().is_match(last) && last != ":" {
+                    break Ok(());
+                }
+            }
+            if tokio::time::Instant::now() > deadline {
+                // stop whatever is still running (a ping, a debug) so it does not bleed into the next command
+                (self.send)(vec![0x03]);
+                break Err(anyhow!("no prompt after {} s running `{}`", timeout.as_secs(), command));
+            }
+            let _ = tokio::time::timeout(Duration::from_millis(250), self.capture.changed.notified()).await;
+        };
+        let raw = String::from_utf8_lossy(&self.capture.stop()).into_owned();
+        result?;
+        let text = clean(&raw);
+        if let Some(line) = rejection(&text, command) {
+            bail!("the device rejected `{command}`: {line}");
+        }
+        Ok(trim_echo_and_prompt(&text, command))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cleans_pager_and_prompt() {
+        let raw = "show ip int brief\r\nInterface   IP-Address  Status\r\nVlan1       10.0.0.1    up\r\n --More-- \x08\x08\x08\x08\x08\x08\x08\x08\x08\x08          \x08\x08\x08\x08\x08\x08\x08\x08\x08\x08Gi1/0/1  unassigned  down\r\nsw1#";
+        let text = clean(raw);
+        let out = trim_echo_and_prompt(&text, "show ip int brief");
+        assert_eq!(out, "Interface   IP-Address  Status\nVlan1       10.0.0.1    up\nGi1/0/1  unassigned  down");
+    }
+
+    #[test]
+    fn prompt_shapes() {
+        for p in ["sw1#", "sw1>", "sw1(config-if)#", "RP/0/RSP0/CPU0:asr9k#", "fw/pri/act# ", "SG350#", "(Cisco Controller) >", "(wlc1) [mynode] #", "ISE-01/admin#", "ddougherty@SN2010-1:mgmt:~$"] {
+            assert!(prompt_regex().is_match(p), "{p}");
+        }
+        for p in ["Password:", "Building configuration...", "% Invalid input detected at '^' marker."] {
+            assert!(!prompt_regex().is_match(p), "{p}");
+        }
+    }
+
+    #[test]
+    fn pager_end_and_password_prompts() {
+        for p in ["(END)", "lines 1-45", "lines 1-45/120 (END)", " --More-- ", "---(more 35%)---"] {
+            assert!(more_regex().is_match(p) || end_regex().is_match(p), "{p}");
+        }
+        assert!(end_regex().is_match("(END)"));
+        assert!(more_regex().is_match("--More-- or (q)uit"));
+        assert!(more_regex().is_match("some output\n:"));
+        assert!(!more_regex().is_match("Reference ID    : 00000000"));
+        assert!(!end_regex().is_match("Line protocol is up (END)x"));
+        for p in ["[sudo] password for cumulus:", "Password:", "admin@10.0.0.1's password: ", "Enter passphrase for key '/home/x/.ssh/id_rsa':"] {
+            assert!(password_regex().is_match(p), "{p}");
+            assert!(!prompt_regex().is_match(p), "{p}");
+        }
+        for p in ["sw1#", "Last password change: never", "cumulus@leaf01:~$"] {
+            assert!(!password_regex().is_match(p), "{p}");
+        }
+    }
+
+    #[tokio::test]
+    async fn aborts_on_a_sudo_password_prompt() {
+        let capture = Arc::new(Capture::default());
+        let sent: Arc<Mutex<Vec<Vec<u8>>>> = Arc::default();
+        let s2 = sent.clone();
+        let send = move |b: Vec<u8>| s2.lock().unwrap().push(b);
+        let runner = Runner { capture: &capture, send: &send };
+        let cap = capture.clone();
+        let feeder = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            cap.feed(b"sudo smonctl\r\n[sudo] password for cumulus: ");
+            tokio::time::sleep(Duration::from_millis(1400)).await;
+            cap.feed(b"\r\ncumulus@leaf01:~$ ");
+        });
+        let out = runner.run("sudo smonctl", Duration::from_secs(5)).await;
+        feeder.await.unwrap();
+        let e = out.unwrap_err().to_string();
+        assert!(e.contains("asked for a password"), "{e}");
+        assert!(sent.lock().unwrap().iter().any(|b| b == &vec![0x03]), "Ctrl-C sent");
+    }
+
+    #[tokio::test]
+    async fn quits_a_less_pager_at_end() {
+        let capture = Arc::new(Capture::default());
+        let sent: Arc<Mutex<Vec<Vec<u8>>>> = Arc::default();
+        let s2 = sent.clone();
+        let send = move |b: Vec<u8>| s2.lock().unwrap().push(b);
+        let runner = Runner { capture: &capture, send: &send };
+        let cap = capture.clone();
+        let feeder = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            cap.feed(b"show logging system | last 2\r\nline one\r\nline two\r\n(END)");
+            tokio::time::sleep(Duration::from_millis(400)).await;
+            cap.feed(b"\r\nise01/admin# ");
+        });
+        let out = runner.run("show logging system | last 2", Duration::from_secs(5)).await.unwrap();
+        feeder.await.unwrap();
+        assert!(sent.lock().unwrap().iter().any(|b| b == b"q"), "q sent");
+        assert_eq!(out, "line one\nline two");
+    }
+
+    #[test]
+    fn rejections_from_other_oses() {
+        let ise = "show logging system | last 5\n-------------------------------^\nsyntax error: expecting\n  begin   - Begin with the line that matches\nISE-01/admin#";
+        assert!(rejection(ise, "show logging system | last 5").unwrap().starts_with("syntax error"));
+        let bash = "sudo smonctl\n-bash: sudo: command not found\nuser@leaf01:mgmt:~$";
+        assert!(rejection(bash, "sudo smonctl").is_some());
+        let cisco = "show foo\n% Invalid input detected at '^' marker.\nsw1#";
+        assert!(rejection(cisco, "show foo").is_some());
+        // a log line quoting an error deeper in the output is not a rejection
+        let log = "show logging\nline 1\nline 2\nline 3\nOct 1 syntax error: in a log line\nsw1#";
+        assert!(rejection(log, "show logging").is_none());
+    }
+
+    #[test]
+    fn questions_and_answers() {
+        for q in ["Destination filename [running-config]?", "Proceed with reload? [confirm]", "System configuration has been modified. Save? [yes/no]:", "Do you want to continue? (y/n) [n]", "Delete flash:/old.bin? [confirm]"] {
+            assert!(question_regex().is_match(q), "{q}");
+            assert!(!prompt_regex().is_match(q), "{q}");
+        }
+        assert!(!question_regex().is_match("sw1#"));
+        assert_eq!(answer_for("Save? [yes/no]:", Answers { yes_no: YesNo::No }), b"no\r");
+        assert_eq!(answer_for("continue? (y/n) [n]", Answers { yes_no: YesNo::Yes }), b"y\r");
+        assert_eq!(answer_for("Destination filename [x]?", Answers { yes_no: YesNo::Yes }), b"\r");
+    }
+
+    #[tokio::test]
+    async fn answers_a_question() {
+        let capture = Arc::new(Capture::default());
+        let cap = capture.clone();
+        let send = move |bytes: Vec<u8>| {
+            let cap = cap.clone();
+            if bytes == b"\r" {
+                tokio::spawn(async move { cap.feed(b"\r\nBuilding configuration...\r\n[OK]\r\nsw1#") });
+            } else {
+                tokio::spawn(async move { cap.feed(b"copy run flash:x.cfg\r\nDestination filename [x.cfg]? ") });
+            }
+        };
+        let runner = Runner { capture: &capture, send: &send };
+        let out = runner.run_with("copy run flash:x.cfg", Duration::from_secs(5), Some(Answers { yes_no: YesNo::Yes })).await.unwrap();
+        assert!(out.contains("[OK]"), "{out}");
+    }
+
+    #[tokio::test]
+    async fn runs_against_a_fake_device() {
+        let capture = Arc::new(Capture::default());
+        let cap = capture.clone();
+        let send = move |bytes: Vec<u8>| {
+            // the "device" echoes the command, pages once, then prompts
+            let cap = cap.clone();
+            if bytes == b" " {
+                tokio::spawn(async move { cap.feed(b"\r          \rline 3\r\nsw1#") });
+            } else {
+                tokio::spawn(async move {
+                    cap.feed(b"show run\r\nline 1\r\nline 2\r\n");
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    cap.feed(b" --More-- ");
+                });
+            }
+        };
+        let runner = Runner { capture: &capture, send: &send };
+        let out = runner.run("show run", Duration::from_secs(5)).await.unwrap();
+        assert_eq!(out, "line 1\nline 2\nline 3");
+    }
+}

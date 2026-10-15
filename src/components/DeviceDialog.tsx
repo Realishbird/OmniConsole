@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { listSerialPorts, secretExists } from "../lib/backend";
+import { resolveFor, type Locker } from "../lib/credentials";
 import {
   DEFAULT_PORT, ENVIRONMENTS, type AuthMethod, type Device, type Environment, type FlowControl, type Parity,
-  type Protocol, type SerialPortInfo,
+  PROTOCOL_LABEL, type Protocol, type SerialPortInfo,
 } from "../lib/types";
 
 export type SecretChange = { kind: "keep" } | { kind: "set"; value: string } | { kind: "delete" };
@@ -16,6 +17,9 @@ interface Props {
   device: Device;
   isNew: boolean;
   devices: Device[];
+  /** credential profiles; null while loading */
+  locker: Locker | null;
+  onCredentials: () => void;
   onSave: (device: Device, secrets: SecretChanges) => void;
   onCancel: () => void;
 }
@@ -27,7 +31,7 @@ function uniq(devices: Device[], key: "customer" | "site" | "building" | "role")
   return [...new Set(devices.map((d) => d[key]).filter(Boolean))].sort();
 }
 
-export default function DeviceDialog({ device, isNew, devices, onSave, onCancel }: Props) {
+export default function DeviceDialog({ device, isNew, devices, locker, onCredentials, onSave, onCancel }: Props) {
   const [d, setD] = useState<Device>(device);
   const [section, setSection] = useState<Section>("general");
   const [tagText, setTagText] = useState(device.tags.join(", "));
@@ -93,7 +97,7 @@ export default function DeviceDialog({ device, isNew, devices, onSave, onCancel 
     }
     if (!out.name) out.name = out.protocol === "serial" ? out.serialPort : out.host;
 
-    const keepSecrets = out.protocol === "ssh";
+    const keepSecrets = out.protocol === "ssh" || out.autoLogin;
     let pw: SecretChange = { kind: "keep" };
     if (!keepSecrets || !savePassword) pw = hadPassword ? { kind: "delete" } : { kind: "keep" };
     else if (password) pw = { kind: "set", value: password };
@@ -104,12 +108,18 @@ export default function DeviceDialog({ device, isNew, devices, onSave, onCancel 
   }
 
   const serial = d.protocol === "serial";
+  const external = d.protocol === "rdp" || d.protocol === "vnc";
+  // credentialId: "" = site/customer default (or this device's own login when none), "-" = this device's own login, else a profile
+  const profile = locker && d.credentialId && d.credentialId !== "-" ? locker.credentials.find((c) => c.id === d.credentialId) ?? null : null;
+  const inheritedR = locker && !d.credentialId ? resolveFor(locker, d) : null;
+  const inherited = inheritedR?.credential ? { credential: inheritedR.credential, via: inheritedR.via } : null;
+  const ownLogin = !profile && !inherited;
   const sections: { id: Section; label: string; show: boolean }[] = [
     { id: "general", label: "General", show: true },
     { id: "location", label: "Location", show: true },
-    { id: "login", label: "Login", show: !serial },
+    { id: "login", label: "Login", show: true },
     { id: "serial", label: "Serial", show: serial },
-    { id: "session", label: "Session", show: true },
+    { id: "session", label: "Session", show: !external },
   ];
 
   return (
@@ -126,13 +136,14 @@ export default function DeviceDialog({ device, isNew, devices, onSave, onCancel 
           <div className="form">
             <label>Connection</label>
             <div className="segmented">
-              {(["ssh", "telnet", "serial"] as Protocol[]).map((p) => (
+              {(["ssh", "telnet", "serial", "rdp", "vnc"] as Protocol[]).map((p) => (
                 <button type="button" key={p} className={d.protocol === p ? "on" : ""} onClick={() => setProtocol(p)}>
-                  {p === "ssh" ? "SSH" : p === "telnet" ? "Telnet" : "Serial"}
+                  {PROTOCOL_LABEL[p]}
                 </button>
               ))}
             </div>
             {d.protocol === "telnet" && <div className="hint warn-text">Telnet is unencrypted: passwords and configs cross the network in clear text.</div>}
+            {external && <div className="hint">Opens in the system's {PROTOCOL_LABEL[d.protocol]} client (Remote Desktop, FreeRDP or Remmina; Screen Sharing, TigerVNC or Remmina). It asks for the password itself.</div>}
 
             <label>Name</label>
             <input autoFocus value={d.name} onChange={(e) => set("name", e.target.value)} placeholder="core-sw1" spellCheck={false} />
@@ -184,12 +195,30 @@ export default function DeviceDialog({ device, isNew, devices, onSave, onCancel 
           </div>
         )}
 
-        {section === "login" && !serial && (
+        {section === "login" && (
           <div className="form">
-            <label>Username</label>
-            <input value={d.username} onChange={(e) => set("username", e.target.value)} placeholder="Asked when connecting if empty" spellCheck={false} />
+            {!external && (
+              <>
+                <label>Credentials</label>
+                <div className="row">
+                  <select value={d.credentialId} onChange={(e) => set("credentialId", e.target.value)}>
+                    <option value="">{inherited ? `Default for this ${inherited.via}: ${inherited.credential.name}` : "This device only (below)"}</option>
+                    {inherited && <option value="-">This device only (below)</option>}
+                    {(locker?.credentials ?? []).slice().sort((a, b) => a.name.localeCompare(b.name)).map((c) => <option key={c.id} value={c.id}>{c.name}{c.username ? ` (${c.domain ? `${c.domain}\\` : ""}${c.username})` : ""}</option>)}
+                  </select>
+                  <button type="button" className="btn" onClick={onCredentials}>Manage…</button>
+                </div>
+                <div className="hint">{profile ? `Logs in as ${profile.domain ? `${profile.domain}\\` : ""}${profile.username || "(no username)"} with the shared profile; change the password once there and every device follows.` : inherited ? "Inherited from the site or customer default. Pick a profile to override it, or choose this device only for its own login." : "The username and password below belong to this device alone."}</div>
+              </>
+            )}
+            {!profile && !inherited && (
+              <>
+                <label>Username</label>
+                <input value={d.username} onChange={(e) => set("username", e.target.value)} placeholder="Asked when connecting if empty" spellCheck={false} />
+              </>
+            )}
 
-            {d.protocol === "ssh" && (
+            {d.protocol === "ssh" && ownLogin && (
               <>
                 <label>Log in with</label>
                 <div className="segmented">
@@ -211,7 +240,13 @@ export default function DeviceDialog({ device, isNew, devices, onSave, onCancel 
               </>
             )}
 
-            {d.protocol === "ssh" && (
+            {d.protocol !== "ssh" && !external && (
+              <label className="check">
+                <input type="checkbox" checked={d.autoLogin} onChange={(e) => set("autoLogin", e.target.checked)} />
+                Log in automatically at the Username and Password prompts
+              </label>
+            )}
+            {ownLogin && (d.protocol === "ssh" || d.autoLogin) && (
               <>
                 <label>Password</label>
                 <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder={hadPassword ? "Saved, leave empty to keep it" : "Asked when connecting if empty"} disabled={!savePassword} />
@@ -221,7 +256,7 @@ export default function DeviceDialog({ device, isNew, devices, onSave, onCancel 
                 </label>
               </>
             )}
-            {d.protocol === "telnet" && <div className="hint">Telnet logs in at the device's own prompts. Automatic Telnet login comes in a later update.</div>}
+            {d.protocol === "telnet" && !d.autoLogin && <div className="hint">Telnet logs in at the device's own prompts; turn on automatic login to answer them with the saved username and password.</div>}
 
             {d.protocol === "ssh" && (
               <>

@@ -1,6 +1,6 @@
 [package]
 name = "omniconsole"
-version = "0.1.0"
+version = "0.11.0"
 description = "OmniConsole: SSH, Telnet and serial console client for network engineers"
 authors = ["Realishbird"]
 edition = "2021"
@@ -20,7 +20,7 @@ tauri-plugin-clipboard-manager = "2"
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "process"] }
 # ring instead of aws-lc-rs: no cmake/nasm needed on Windows ARM and Linux ARM builds
 russh = { version = "0.64", default-features = false, features = ["ring", "rsa", "flate2", "des"] }
 serialport = "4"
@@ -31,8 +31,18 @@ base64 = "0.22"
 log = "0.4"
 regex = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+similar = "2"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+russh-sftp = "3"
+aes-gcm = "0.11"
+argon2 = { version = "0.6", default-features = false, features = ["alloc"] }
+rand = "0.8"
 
 [profile.release]
 codegen-units = 1
 lto = true
 strip = true
+
+[dev-dependencies]
+tempfile = "3"

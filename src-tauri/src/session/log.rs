@@ -3,6 +3,9 @@
 //! timestamps, and secrets masked (see redact.rs).
 
 use std::fs::{self, File};
+
+/// Widest line the log will pad to, whatever an escape sequence asks for.
+const MAX_COL: usize = 4096;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
@@ -159,8 +162,9 @@ impl SessionLog {
                 _ => self.line.clear(),
             },
             'D' => self.col = self.col.saturating_sub(n.max(1)),
-            'C' => self.col += n.max(1),
-            'G' => self.col = n.max(1) - 1,
+            // a device can send any number here; the line never needs more than a screen
+            'C' => self.col = (self.col + n.max(1)).min(MAX_COL),
+            'G' => self.col = (n.max(1) - 1).min(MAX_COL),
             _ => {}
         }
     }

@@ -5,9 +5,16 @@ import PromptDialog from "./components/PromptDialog";
 import ConfirmDialog from "./components/ConfirmDialog";
 import SettingsDialog from "./components/SettingsDialog";
 import SnippetsDialog from "./components/SnippetsDialog";
+import CredentialsDialog from "./components/CredentialsDialog";
+import UnlockDialog from "./components/UnlockDialog";
+import { EMPTY_LOCKER, loadLocker, resolveFor, saveLocker, vaultLock, vaultStatus, vaultTouch, type Locker, type VaultStatus } from "./lib/credentials";
+import ToolsPanel, { detectedOs, type ToolsSection } from "./components/ToolsPanel";
 import CommandPalette, { type PaletteItem } from "./components/CommandPalette";
+import Completions from "./components/Completions";
+import NameDialog from "./components/NameDialog";
+import { complete, launchExternal, openWindow, type Completion } from "./lib/files";
 import {
-  BookmarkIcon, CloseIcon, CommandIcon, DownIcon, Logo, PlusIcon, RecordIcon, SaveIcon, SearchIcon, SettingsIcon,
+  BookmarkIcon, ChecksIcon, CloseIcon, CommandIcon, DownIcon, LockIcon, Logo, PlusIcon, RecordIcon, SaveIcon, SearchIcon, SettingsIcon, UnlockIcon,
   SidebarIcon, SplitDownIcon, SplitRightIcon, UpIcon,
 } from "./components/Icons";
 import {
@@ -19,7 +26,7 @@ import { parseQuick } from "./lib/quick";
 import { DEFAULT_SETTINGS, type Settings } from "./lib/settings";
 import { TerminalSession, type PendingPrompt, type SessionSpec, type SessionState } from "./lib/terminal";
 import { applyTheme, THEMES, themeById } from "./lib/themes";
-import { envInfo, newDevice, serialLabel, type Device, type HistoryEntry, type Snippet } from "./lib/types";
+import { envInfo, EXTERNAL, newDevice, PROTOCOL_LABEL, serialLabel, type Device, type HistoryEntry, type Snippet } from "./lib/types";
 
 interface Tab {
   key: string;
@@ -47,6 +54,14 @@ interface Confirm {
 }
 
 type SplitDir = "row" | "column";
+
+/** A saved set of tabs: which devices were open, and the split. */
+interface Layout {
+  name: string;
+  deviceIds: string[];
+  split: SplitDir | null;
+  savedAt: number;
+}
 
 const isMac = navigator.platform.toLowerCase().includes("mac");
 const MAX_HISTORY = 2000;
@@ -82,6 +97,10 @@ export default function App() {
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(() => stored("sidebarOpen", true));
   const [sidebarWidth, setSidebarWidth] = useState<number>(() => stored("sidebarWidth", 280));
+  const [toolsOpen, setToolsOpen] = useState<boolean>(() => stored("toolsOpen", false));
+  const [toolsSection, setToolsSection] = useState<ToolsSection>(() => stored("toolsSection", "checks"));
+  const [broadcast, setBroadcast] = useState<string[] | null>(null);
+  const [broadcastText, setBroadcastText] = useState("");
   const [devices, setDevices] = useState<Device[]>([]);
   const [snippets, setSnippets] = useState<Snippet[]>([]);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
@@ -93,12 +112,19 @@ export default function App() {
   const [confirm, setConfirm] = useState<Confirm | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [snippetsOpen, setSnippetsOpen] = useState(false);
+  const [credentialsOpen, setCredentialsOpen] = useState(false);
+  const [locker, setLocker] = useState<Locker>(EMPTY_LOCKER);
+  const [vault, setVault] = useState<VaultStatus>({ configured: false, locked: false, autoLockMinutes: 0 });
+  const [unlockAsk, setUnlockAsk] = useState<{ reason: string; skipLabel?: string; resolve: (ok: boolean) => void } | null>(null);
   const [palette, setPalette] = useState<{ initial: string; placeholder?: string; only?: string } | null>(null);
   const [quick, setQuick] = useState("");
   const [quickInvalid, setQuickInvalid] = useState(false);
   const [findOpen, setFindOpen] = useState(false);
   const [findText, setFindText] = useState("");
   const [toast, setToast] = useState<string | null>(null);
+  const [completions, setCompletions] = useState<{ tabKey: string; partial: string; items: Completion[]; loading: boolean } | null>(null);
+  const [layouts, setLayouts] = useState<Layout[]>([]);
+  const [naming, setNaming] = useState<{ title: string; confirm: string; placeholder?: string; resolve: (name: string | null) => void } | null>(null);
   const [, setTick] = useState(0);
   const quickRef = useRef<HTMLInputElement>(null);
   const findRef = useRef<HTMLInputElement>(null);
@@ -129,7 +155,55 @@ export default function App() {
       .finally(() => setSettingsLoaded(true));
     loadData<Snippet[]>("snippets").then((s) => setSnippets(Array.isArray(s) ? s : [])).catch(() => {});
     loadData<HistoryEntry[]>("history").then((h) => setHistory(Array.isArray(h) ? h : [])).catch(() => {});
+    loadData<Layout[]>("workspace").then((l) => setLayouts(Array.isArray(l) ? l : [])).catch(() => {});
+    loadLocker().then(setLocker).catch((e) => console.error("loading credentials", e));
+    vaultStatus().then(setVault).catch(() => {});
   }, []);
+
+  // the vault auto-locks in the backend; the lock icon follows it, and activity keeps it open
+  useEffect(() => {
+    const poll = window.setInterval(() => void vaultStatus().then(setVault).catch(() => {}), 30_000);
+    let last = 0;
+    function activity() {
+      const now = Date.now();
+      if (now - last > 20_000) {
+        last = now;
+        void vaultTouch();
+      }
+    }
+    window.addEventListener("keydown", activity);
+    window.addEventListener("mousedown", activity);
+    return () => {
+      window.clearInterval(poll);
+      window.removeEventListener("keydown", activity);
+      window.removeEventListener("mousedown", activity);
+    };
+  }, []);
+
+  const lockerRef = useRef(locker);
+  lockerRef.current = locker;
+  const vaultRef = useRef(vault);
+  vaultRef.current = vault;
+
+  const updateLocker = useCallback((next: Locker) => {
+    setLocker(next);
+    void saveLocker(next).catch((e) => console.error("saving credentials", e));
+  }, []);
+
+  /** Ask for the vault passphrase; resolves false when the user declines. */
+  const askUnlock = useCallback((reason: string, skipLabel?: string) => new Promise<boolean>((resolve) => setUnlockAsk({ reason, skipLabel, resolve })), []);
+
+  // a second window opened on a device (index.html?connect=<id>) connects to it once devices are loaded
+  const autoConnected = useRef(false);
+  useEffect(() => {
+    if (autoConnected.current || devices.length === 0) return;
+    const id = new URLSearchParams(window.location.search).get("connect");
+    if (!id) return;
+    autoConnected.current = true;
+    const d = devices.find((x) => x.id === id);
+    if (d) void connectDevice(d);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [devices]);
 
   useEffect(() => {
     applyTheme(themeById(settings.theme));
@@ -141,6 +215,8 @@ export default function App() {
   }, [settings, settingsLoaded]);
 
   useEffect(() => store("sidebarOpen", sidebarOpen), [sidebarOpen]);
+  useEffect(() => store("toolsOpen", toolsOpen), [toolsOpen]);
+  useEffect(() => store("toolsSection", toolsSection), [toolsSection]);
   useEffect(() => store("sidebarWidth", sidebarWidth), [sidebarWidth]);
 
   const historyDirty = useRef(false);
@@ -405,6 +481,7 @@ export default function App() {
           ? { host: jumpDevice.host, port: jumpDevice.port, username: jumpDevice.username, deviceId: jumpDevice.id, authMethod: jumpDevice.authMethod, keyPath: jumpDevice.keyPath }
           : null,
       keepalive: d.keepalive,
+      retryLimit: lockerRef.current.retryLimit,
       serialPort: d.serialPort,
       baud: d.baud,
       dataBits: d.dataBits,
@@ -413,11 +490,22 @@ export default function App() {
       flowControl: d.flowControl,
       log: s.logAll || d.logSession,
       logTimestamps: s.logTimestamps,
+      autoLogin: d.protocol !== "ssh" && d.autoLogin,
     };
   }, []);
 
   const connectDevice = useCallback(
     async (d: Device) => {
+      if (EXTERNAL.includes(d.protocol)) {
+        try {
+          await launchExternal(d.protocol, d.host, d.port, d.username);
+          showToast(`Opened ${d.name} in the ${PROTOCOL_LABEL[d.protocol]} client`);
+          void persist(devicesRef.current.map((x) => (x.id === d.id ? { ...x, lastConnected: Date.now() } : x)));
+        } catch (e) {
+          showToast(String(e));
+        }
+        return;
+      }
       if (d.protocol === "telnet" && d.environment === "production" && settingsRef.current.warnInsecure) {
         const ok = await askConfirm({
           title: `Telnet to production device ${d.name}?`,
@@ -427,9 +515,14 @@ export default function App() {
         });
         if (!ok) return;
       }
+      if (vaultRef.current.locked && d.protocol !== "serial") {
+        const r = resolveFor(lockerRef.current, d);
+        const who = r.credential ? `the profile ${r.credential.name}` : "its saved password";
+        await askUnlock(`${d.name} logs in with ${who}. Unlock the vault to use it, or connect and type the password.`, "Connect and type it");
+      }
       openTab(d.name, specFor(d), d.id);
     },
-    [askConfirm, openTab, specFor],
+    [askConfirm, askUnlock, openTab, specFor],
   );
 
   function quickConnect(e: React.FormEvent) {
@@ -437,6 +530,11 @@ export default function App() {
     const t = parseQuick(quick);
     if (!t) {
       setQuickInvalid(true);
+      return;
+    }
+    if (EXTERNAL.includes(t.protocol)) {
+      launchExternal(t.protocol, t.host, t.port, t.username).then(() => showToast(`Opened ${t.host} in the ${PROTOCOL_LABEL[t.protocol]} client`), (e) => showToast(String(e)));
+      setQuick("");
       return;
     }
     const title = t.protocol === "serial" ? t.serialPort : t.username ? `${t.username}@${t.host}` : t.host;
@@ -546,6 +644,24 @@ export default function App() {
     setTimeout(() => findRef.current?.select(), 0);
   }
 
+  async function sendBroadcast() {
+    const text = broadcastText.trim();
+    if (!broadcast || !text) return;
+    const targets = tabs.filter((t) => broadcast.includes(t.key) && t.state === "connected");
+    if (!targets.length) return showToast("No connected targets selected");
+    const prod = targets.filter((t) => tabDevice(t)?.environment === "production");
+    const ok = await askConfirm({
+      title: `Send to ${targets.length} session${targets.length === 1 ? "" : "s"}?`,
+      message: `${text}\n\nTargets: ${targets.map((t) => t.title).join(", ")}${prod.length ? `\n\n${prod.length} of them ${prod.length === 1 ? "is a" : "are"} production device${prod.length === 1 ? "" : "s"}.` : ""}`,
+      confirm: "Send to all",
+      danger: prod.length > 0,
+    });
+    if (!ok) return;
+    for (const t of targets) t.session.send(text + "\r");
+    setBroadcastText("");
+    showToast(`Sent to ${targets.length} session${targets.length === 1 ? "" : "s"}`);
+  }
+
   async function sendSnippet(s: Snippet) {
     if (!active) return;
     const lines = s.body.replace(/\r\n/g, "\n").replace(/\n+$/, "").split("\n");
@@ -568,6 +684,81 @@ export default function App() {
     if (b) showToast(`Bookmark ${b.id} added. Find it in the command palette.`);
   }
 
+  /* ---------- windows, layouts, completion ---------- */
+
+  function connectInWindow(d: Device) {
+    openWindow(`connect=${d.id}`).catch((e) => showToast(String(e)));
+  }
+
+  const askName = useCallback((title: string, confirm: string, placeholder?: string) => new Promise<string | null>((resolve) => setNaming({ title, confirm, placeholder, resolve })), []);
+
+  async function saveLayout() {
+    const deviceIds = tabs.map((t) => t.deviceId).filter((id): id is string => !!id);
+    if (deviceIds.length === 0) {
+      showToast("Only tabs opened from saved devices go in a layout");
+      return;
+    }
+    const name = await askName("Save this layout", "Save", "Layout name, such as Site A core");
+    if (!name) return;
+    const next = [...layouts.filter((l) => l.name !== name), { name, deviceIds, split: split ? splitDir : null, savedAt: Date.now() }];
+    setLayouts(next);
+    await saveData("workspace", next).catch(() => {});
+    showToast(`Saved layout ${name} (${deviceIds.length} device${deviceIds.length === 1 ? "" : "s"})`);
+  }
+
+  async function openLayout(l: Layout) {
+    let opened = 0;
+    for (const id of l.deviceIds) {
+      const d = devicesRef.current.find((x) => x.id === id);
+      if (!d) continue;
+      if (tabsRef.current.some((t) => t.deviceId === id && t.state !== "closed" && t.state !== "error")) continue;
+      await connectDevice(d);
+      opened++;
+    }
+    if (l.split) setTimeout(() => splitPane(l.split!), 100);
+    showToast(opened ? `Opened ${opened} device${opened === 1 ? "" : "s"} from ${l.name}` : `${l.name}: everything is already open`);
+  }
+
+  async function deleteLayout(l: Layout) {
+    const next = layouts.filter((x) => x.name !== l.name);
+    setLayouts(next);
+    await saveData("workspace", next).catch(() => {});
+  }
+
+  /** Ctrl+Space: ask the device what can follow what is typed, with its own `?`. */
+  async function completeLine() {
+    const t = tabsRef.current.find((x) => x.key === activeKey);
+    if (!t || t.state !== "connected" || !t.session.backendId) return;
+    const partial = t.session.currentCommand();
+    if (partial === null) {
+      showToast("Completion works at a device prompt");
+      return;
+    }
+    setCompletions({ tabKey: t.key, partial, items: [], loading: true });
+    try {
+      const items = await complete(t.session.backendId, partial);
+      setCompletions((c) => (c && c.tabKey === t.key ? { ...c, items, loading: false } : c));
+    } catch (e) {
+      setCompletions(null);
+      showToast(String(e));
+    }
+  }
+
+  function pickCompletion(word: string) {
+    const c = completions;
+    setCompletions(null);
+    const t = tabsRef.current.find((x) => x.key === c?.tabKey);
+    if (!c || !t) return;
+    if (word === "<cr>") {
+      t.session.send("\r");
+      return;
+    }
+    // finish the word being typed, or add the next one
+    const typed = c.partial.endsWith(" ") || !c.partial ? "" : c.partial.split(" ").pop() ?? "";
+    const rest = word.toLowerCase().startsWith(typed.toLowerCase()) ? word.slice(typed.length) : (typed ? " " : "") + word;
+    t.session.send(`${rest} `);
+  }
+
   /* ---------- command palette ---------- */
 
   const mod = isMac ? "⌘" : "Ctrl";
@@ -579,8 +770,19 @@ export default function App() {
     };
     action("quick", "Quick connect", () => quickRef.current?.focus(), `${mod}+Shift+T`);
     action("add", "Add device", () => setEditing({ device: newDevice(), isNew: true }));
+    action("creds", "Credentials: profiles, defaults, vault", () => setCredentialsOpen(true), `${mod}+Shift+K`);
+    action("lock", vault.locked ? "Unlock the credential vault" : "Lock the credential vault", () => vault.locked ? void askUnlock("Unlock the credential vault.") : void vaultLock().then(setVault), undefined, vault.configured);
     action("close", "Close tab", () => active && void closeTab(active.key), `${mod}+Shift+W`, !!active);
     action("dup", "Duplicate session in a new tab", () => active && openTab(active.title, active.session.spec, active.deviceId), undefined, !!active);
+    action("window", "New window", () => void openWindow("").catch((e) => showToast(String(e))), `${mod}+Shift+N`);
+    action("devwindow", "Open this device in a new window", () => activeDevice && connectInWindow(activeDevice), undefined, !!activeDevice && !EXTERNAL.includes(activeDevice.protocol));
+    action("complete", "Complete the command (device ? help)", () => void completeLine(), "Ctrl+Space", !!active && active.state === "connected");
+    action("files", "Files: SFTP / SCP transfer", () => { setToolsSection("files"); setToolsOpen(true); }, undefined, !!active);
+    action("savelayout", "Save open tabs as a layout", () => void saveLayout(), undefined, tabs.length > 0);
+    for (const l of layouts) {
+      action(`layout-${l.name}`, `Open layout: ${l.name}`, () => void openLayout(l));
+      action(`dellayout-${l.name}`, `Delete layout: ${l.name}`, () => void deleteLayout(l));
+    }
     action("splitr", split && splitDir === "row" ? "Unsplit" : "Split right", () => splitPane("row"), `${mod}+Shift+D`, !!active);
     action("splitd", split && splitDir === "column" ? "Unsplit" : "Split down", () => splitPane("column"), `${mod}+Shift+E`, !!active);
     action("reconnect", "Reconnect", () => active && void active.session.reconnect(), `${mod}+Shift+R`, !!active && active.state !== "connected");
@@ -592,6 +794,16 @@ export default function App() {
     action("history", "Search command history", () => setPalette({ initial: "", only: "History", placeholder: "Search command history" }), `${mod}+Shift+H`, !!active);
     action("clear", "Clear scrollback", () => active?.session.term.clear(), undefined, !!active);
     action("sidebar", sidebarOpen ? "Hide devices" : "Show devices", () => setSidebarOpen((v) => !v), `${mod}+Shift+B`);
+    action("tools", toolsOpen ? "Hide tools" : "Show tools (health checks, configs)", () => setToolsOpen((v) => !v), `${mod}+Shift+I`);
+    action("checks", "Run health checks", () => { setToolsSection("checks"); setToolsOpen(true); });
+    action("collect", "Collect: platform quick actions and troubleshooting sets", () => { setToolsSection("collect"); setToolsOpen(true); });
+    action("backup", "Back up running config", () => { setToolsSection("configs"); setToolsOpen(true); });
+    action("assistant", "Ask the assistant", () => { setToolsSection("assistant"); setToolsOpen(true); }, `${mod}+Shift+A`);
+    action("explain", "Explain selected output", () => { setToolsSection("assistant"); setToolsOpen(true); }, undefined, !!active?.session.selection());
+    action("workstation", "Workstation tools (ping, traceroute, DNS, ports, MTU, subnet)", () => { setToolsSection("workstation"); setToolsOpen(true); });
+    action("workflows", "Guided troubleshooting", () => { setToolsSection("workflows"); setToolsOpen(true); });
+    action("deploy", "Templates, firmware, checklists, audit", () => { setToolsSection("deploy"); setToolsOpen(true); });
+    action("broadcast", broadcast ? "Stop broadcasting" : "Broadcast a command to several sessions", () => setBroadcast((b) => (b ? null : tabs.filter((t) => t.state === "connected").map((t) => t.key))), `${mod}+Shift+L`, tabs.length > 1 || !!broadcast);
     action("snippets", "Manage snippets", () => setSnippetsOpen(true), `${mod}+Shift+O`);
     action("settings", "Settings", () => setSettingsOpen(true), `${mod}+,`);
     action("import", "Import devices", () => void onImport());
@@ -622,10 +834,15 @@ export default function App() {
     }
     return palette.only ? items.filter((i) => i.group === palette.only) : items;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [palette, tabs, devices, snippets, history, active, split, splitDir, sidebarOpen]);
+  }, [palette, tabs, devices, snippets, history, active, split, splitDir, sidebarOpen, layouts, vault, askUnlock]);
 
   /* ---------- keyboard ---------- */
 
+  /** On a Linux shell (Cumulus, SONiC bash) Ctrl+Space is set-mark, so the `?` completion must not take it. */
+  function isLinuxShell(t: Tab | null | undefined): boolean {
+    const os = t ? detectedOs(t.key) : null;
+    return os === "cumulus" || os === "sonic";
+  }
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       const modKey = isMac ? e.metaKey : e.ctrlKey;
@@ -641,12 +858,18 @@ export default function App() {
         const t = tabsRef.current[parseInt(e.code.slice(5), 10) - 1];
         if (t) activate(t.key);
       } else if (key === "f6" && split) setFocusSlot((f) => 1 - f);
+      else if (e.ctrlKey && !e.shiftKey && !e.altKey && e.code === "Space" && !isLinuxShell(active)) void completeLine();
+      else if (modKey && e.shiftKey && key === "n") void openWindow("").catch((err) => showToast(String(err)));
       else if (modKey && e.shiftKey && key === "p") setPalette({ initial: "" });
+      else if (modKey && e.shiftKey && key === "k") setCredentialsOpen(true);
       else if (modKey && !e.shiftKey && key === "k") setPalette({ initial: "" });
       else if (modKey && e.shiftKey && key === "h") active && setPalette({ initial: "", only: "History", placeholder: "Search command history" });
       else if (modKey && e.shiftKey && key === "t") quickRef.current?.focus();
       else if (modKey && e.shiftKey && key === "w") activeKey && void closeTab(activeKey);
       else if (modKey && e.shiftKey && key === "b") setSidebarOpen((v) => !v);
+      else if (modKey && e.shiftKey && key === "i") setToolsOpen((v) => !v);
+      else if (modKey && e.shiftKey && key === "a") { setToolsSection("assistant"); setToolsOpen(true); }
+      else if (modKey && e.shiftKey && key === "l") setBroadcast((b) => (b ? null : tabsRef.current.filter((t) => t.state === "connected").map((t) => t.key)));
       else if (modKey && e.shiftKey && key === "f") openFind();
       else if (modKey && e.shiftKey && key === "c") active?.session.copySelection();
       else if (modKey && e.shiftKey && key === "v") void active?.session.pasteClipboard();
@@ -707,6 +930,7 @@ export default function App() {
           onGroupBy={(groupBy) => setSettings((s) => ({ ...s, groupBy }))}
           onResize={setSidebarWidth}
           onConnect={(d) => void connectDevice(d)}
+          onConnectWindow={connectInWindow}
           onAdd={(preset) => setEditing({ device: { ...newDevice("ssh"), ...preset }, isNew: true })}
           onEdit={(device) => setEditing({ device, isNew: false })}
           onDuplicate={(d) => setEditing({ device: { ...d, id: crypto.randomUUID(), name: `${d.name} copy`, favorite: false, lastConnected: null }, isNew: true })}
@@ -714,6 +938,7 @@ export default function App() {
           onToggleFavorite={(d) => void persist(devices.map((x) => (x.id === d.id ? { ...x, favorite: !x.favorite } : x)))}
           onImport={() => void onImport()}
           onExport={() => void onExport()}
+          onCredentials={() => setCredentialsOpen(true)}
         />
       ) : (
         <div />
@@ -755,6 +980,12 @@ export default function App() {
           <button className="icon-btn" title={`Save output to a file (${mod}+Shift+S)`} disabled={!active} onClick={() => void saveOutput()}>
             <SaveIcon />
           </button>
+          <button className={`icon-btn${toolsOpen ? " on" : ""}`} title={`Tools: health checks and configs (${mod}+Shift+I)`} onClick={() => setToolsOpen((v) => !v)}>
+            <ChecksIcon />
+          </button>
+          <button className={`icon-btn${vault.locked ? " locked" : ""}`} title={vault.configured ? (vault.locked ? "Credential vault locked: click to unlock" : "Credential vault unlocked: click to lock") : `Credentials (${mod}+Shift+K)`} onClick={() => vault.configured ? (vault.locked ? void askUnlock("Unlock the credential vault.") : void vaultLock().then(setVault)) : setCredentialsOpen(true)}>
+            {vault.locked ? <LockIcon /> : <UnlockIcon />}
+          </button>
           <button className="icon-btn" title={`Settings (${mod}+,)`} onClick={() => setSettingsOpen(true)}>
             <SettingsIcon />
           </button>
@@ -777,13 +1008,18 @@ export default function App() {
                       void closeTab(t.key);
                     } else activate(t.key);
                   }}
-                  title={`${t.title}\n${STATE_LABEL[t.state]}: ${t.message}${i < 9 ? `\nAlt+${i + 1}` : ""}`}
+                  title={`${t.title}\n${STATE_LABEL[t.state]}: ${t.message}${i < 9 ? `\nAlt+${i + 1}` : ""}${d && !EXTERNAL.includes(d.protocol) ? "\nRight-click: open in a new window" : ""}`}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    if (d && !EXTERNAL.includes(d.protocol)) connectInWindow(d);
+                  }}
                 >
                   <span className={`dot ${t.state}`} role="img" aria-label={STATE_LABEL[t.state]} />
                   {env.short && <span className="env-badge" style={{ ["--env" as string]: env.color }}>{env.short}</span>}
                   <span className="title">{t.title}</span>
                   {t.promptInfo && <span className={`priv ${t.promptInfo.privilege}`} title={PRIVILEGE_LABEL[t.promptInfo.privilege]}>{promptGlyph(t.promptInfo)}</span>}
                   {t.logPath && <span className="rec" title="Logging to a file"><RecordIcon /></span>}
+                  {broadcast?.includes(t.key) && <span className="bc-badge" title="Receives broadcast commands">BC</span>}
                   <button className="icon-btn" title={`Close (${mod}+Shift+W)`} onMouseDown={(e) => e.stopPropagation()} onClick={() => void closeTab(t.key)}>
                     <CloseIcon />
                   </button>
@@ -796,6 +1032,28 @@ export default function App() {
           </div>
         )}
 
+        {broadcast && (
+          <div className="broadcast">
+            <span className="broadcast-label">BROADCAST</span>
+            <div className="broadcast-targets">
+              {tabs.filter((t) => t.state === "connected").map((t) => {
+                const env = envInfo(tabDevice(t)?.environment ?? "");
+                return (
+                  <label key={t.key} className={`check${env.short === "PROD" ? " warn-text" : ""}`}>
+                    <input type="checkbox" checked={broadcast.includes(t.key)} onChange={(e) => setBroadcast((b) => (e.target.checked ? [...(b ?? []), t.key] : (b ?? []).filter((k) => k !== t.key)))} />
+                    {t.title}{env.short ? ` (${env.short})` : ""}
+                  </label>
+                );
+              })}
+            </div>
+            <form className="broadcast-form" onSubmit={(e) => { e.preventDefault(); void sendBroadcast(); }}>
+              <input value={broadcastText} onChange={(e) => setBroadcastText(e.target.value)} placeholder={`Command for ${broadcast.length} selected session${broadcast.length === 1 ? "" : "s"} (typed keys in the terminal are not broadcast)`} spellCheck={false} autoFocus />
+              <button type="submit" className="btn small danger-fill" disabled={!broadcastText.trim() || !broadcast.length}>Send to {broadcast.length}</button>
+            </form>
+            <button className="icon-btn" title={`Stop broadcasting (${mod}+Shift+L)`} onClick={() => setBroadcast(null)}><CloseIcon /></button>
+          </div>
+        )}
+        <div className="workspace">
         <div className={`panes${split ? ` split ${splitDir}` : ""}`} ref={panesBox}>
           {tabs.length === 0 && (
             <div className="welcome">
@@ -809,6 +1067,11 @@ export default function App() {
                   <li><span>Split right / down</span><kbd>{mod}+Shift+D / E</kbd></li>
                   <li><span>Command history</span><kbd>{mod}+Shift+H</kbd></li>
                   <li><span>Snippets</span><kbd>{mod}+Shift+O</kbd></li>
+                  <li><span>Tools: checks, configs, workflows</span><kbd>{mod}+Shift+I</kbd></li>
+                  <li><span>Assistant</span><kbd>{mod}+Shift+A</kbd></li>
+                  <li><span>Broadcast to sessions</span><kbd>{mod}+Shift+L</kbd></li>
+                  <li><span>Complete a command (device ? help)</span><kbd>Ctrl+Space</kbd></li>
+                  <li><span>New window</span><kbd>{mod}+Shift+N</kbd></li>
                   <li><span>Find in output</span><kbd>{mod}+Shift+F</kbd></li>
                   <li><span>Bookmark a line</span><kbd>{mod}+Shift+M</kbd></li>
                   <li><span>Switch tab</span><kbd>Ctrl+Tab · Alt+1…9</kbd></li>
@@ -869,7 +1132,33 @@ export default function App() {
               </button>
             </form>
           )}
+          {completions && completions.tabKey === activeKey && (
+            <Completions items={completions.items} partial={completions.partial} loading={completions.loading} onPick={pickCompletion} onClose={() => { setCompletions(null); active?.session.focus(); }} />
+          )}
           {toast && <div className="toast" role="status">{toast}</div>}
+        </div>
+        {toolsOpen && (
+          <ToolsPanel
+            sessionId={active?.state === "connected" ? active.session.backendId : null}
+            tabKey={active?.key ?? "none"}
+            deviceName={activeDevice?.name || active?.promptInfo?.hostname || active?.title || ""}
+            site={activeDevice?.site ?? ""}
+            hostname={active?.promptInfo?.hostname ?? ""}
+            maskSecrets={settings.maskExports}
+            section={toolsSection}
+            onSection={setToolsSection}
+            onClose={() => setToolsOpen(false)}
+            onSend={(c) => active?.session.send(c + "\r")}
+            onToast={showToast}
+            environment={activeDevice?.environment ?? ""}
+            host={activeDevice?.host ?? active?.session.spec.host ?? ""}
+            ai={settings.ai}
+            getSelection={() => active?.session.selection() ?? ""}
+            getRecent={() => active?.session.recentOutput(120) ?? ""}
+            onOpenSettings={() => setSettingsOpen(true)}
+            spec={active?.session.spec ?? null}
+          />
+        )}
         </div>
 
         <div className="statusbar">
@@ -904,7 +1193,27 @@ export default function App() {
 
       {active?.prompt && <PromptDialog key={active.key + active.prompt.kind + active.prompt.message} prompt={active.prompt} onAnswer={(v) => active.session.answer(v)} />}
       {editing && (
-        <DeviceDialog device={editing.device} isNew={editing.isNew} devices={devices} onSave={(d, s) => void onSaveDevice(d, s)} onCancel={() => setEditing(null)} />
+        <DeviceDialog device={editing.device} isNew={editing.isNew} devices={devices} locker={locker} onCredentials={() => setCredentialsOpen(true)} onSave={(d, s) => void onSaveDevice(d, s)} onCancel={() => setEditing(null)} />
+      )}
+      {credentialsOpen && (
+        <CredentialsDialog
+          locker={locker}
+          vault={vault}
+          devices={devices}
+          onChange={updateLocker}
+          onVault={setVault}
+          onToast={showToast}
+          onUnlock={() => askUnlock("This needs the vault open.")}
+          onClose={() => { setCredentialsOpen(false); void loadLocker().then(setLocker).catch(() => {}); active?.session.focus(); }}
+        />
+      )}
+      {unlockAsk && (
+        <UnlockDialog
+          reason={unlockAsk.reason}
+          skipLabel={unlockAsk.skipLabel}
+          onUnlocked={(v) => { setVault(v); unlockAsk.resolve(true); setUnlockAsk(null); }}
+          onCancel={() => { unlockAsk.resolve(false); setUnlockAsk(null); }}
+        />
       )}
       {settingsOpen && <SettingsDialog settings={settings} onChange={setSettings} onClose={() => { setSettingsOpen(false); active?.session.focus(); }} />}
       {snippetsOpen && (
@@ -924,6 +1233,7 @@ export default function App() {
           onClose={() => { setPalette(null); active?.session.focus(); }}
         />
       )}
+      {naming && <NameDialog title={naming.title} confirm={naming.confirm} placeholder={naming.placeholder} onResult={(n) => { naming.resolve(n); setNaming(null); active?.session.focus(); }} />}
       {confirm && (
         <ConfirmDialog
           title={confirm.title}
