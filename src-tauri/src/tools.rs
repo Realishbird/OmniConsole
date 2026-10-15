@@ -124,6 +124,46 @@ async fn detect_facts(sessions: &SessionManager, id: &str) -> CmdResult<Facts> {
     Ok(facts)
 }
 
+/// Run one read-only probe command. Linux commands written with `sudo` run
+/// as `sudo -n` so a box without passwordless sudo refuses at once instead
+/// of asking for a password; the command is then retried unprivileged, and
+/// only if that fails too is it reported as needing root.
+pub async fn probe(sessions: &SessionManager, id: &str, command: &str, timeout: Duration) -> anyhow::Result<String> {
+    let trimmed = command.trim();
+    let Some(rest) = trimmed.strip_prefix("sudo ") else {
+        return sessions.run_command(id, trimmed, timeout).await;
+    };
+    let rest = rest.trim_start();
+    let noninteractive = if rest.starts_with("-n ") { trimmed.to_string() } else { format!("sudo -n {rest}") };
+    let first = sessions.run_command(id, &noninteractive, timeout).await;
+    let needs_password = match &first {
+        Ok(text) => sudo_refused(text),
+        Err(e) => e.to_string().contains("asked for a password"),
+    };
+    if !needs_password {
+        return first;
+    }
+    let unprivileged = rest.trim_start_matches("-n ").trim();
+    let second = sessions.run_command(id, unprivileged, timeout).await?;
+    if root_required(&second) {
+        anyhow::bail!("`{unprivileged}` needs root and this login has no passwordless sudo (add a sudoers NOPASSWD rule or use the cumulus user)");
+    }
+    Ok(second)
+}
+
+/// `sudo -n` output when a password would have been needed.
+pub fn sudo_refused(text: &str) -> bool {
+    let t = text.to_lowercase();
+    t.contains("a password is required") || t.contains("a terminal is required") || t.contains("[sudo] password for")
+}
+
+/// What a privileged tool says when run by an ordinary user.
+pub fn root_required(text: &str) -> bool {
+    let t = text.to_lowercase();
+    ["permission denied", "operation not permitted", "must be root", "are you root", "run as root", "only root", "need to be root", "requires root", "superuser"].iter().any(|m| t.contains(m))
+        || t.trim().is_empty()
+}
+
 /// `show version`, then turn the pager off for the session.
 #[tauri::command]
 pub async fn device_detect(sessions: State<'_, SessionManager>, id: String) -> CmdResult<Facts> {
@@ -199,7 +239,7 @@ pub async fn checks_run(
             break;
         }
         let _ = events.send(CheckProgress::Command { command: command.clone(), index, total });
-        let result = sessions.run_command(&id, command, COMMAND_TIMEOUT).await.map_err(|e| format!("{e:#}"));
+        let result = probe(&sessions, &id, command, COMMAND_TIMEOUT).await.map_err(|e| format!("{e:#}"));
         let _ = events.send(CheckProgress::Output { command: command.clone(), ok: result.is_ok(), bytes: result.as_ref().map(|s| s.len()).unwrap_or(0) });
         if let Err(e) = &result {
             if e.contains("session is closed") {
@@ -281,7 +321,7 @@ pub async fn config_backup(
             .or_else(|| if kind == "running" { profile.configs.first() } else if kind == "startup" { profile.configs.get(1) } else { None })
             .ok_or_else(|| format!("{} has no {kind} configuration", os.label()))?;
         let command = picked.command.as_str();
-        let text = sessions.run_command(&id, command, CONFIG_TIMEOUT).await.map_err(err)?;
+        let text = probe(&sessions, &id, command, CONFIG_TIMEOUT).await.map_err(err)?;
         if text.trim().is_empty() {
             return Err(format!("`{command}` returned nothing"));
         }

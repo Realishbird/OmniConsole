@@ -51,7 +51,22 @@ pub fn prompt_regex() -> &'static Regex {
 
 fn more_regex() -> &'static Regex {
     static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"(?i)-+ ?\(?more\)?(?: \d+%)? ?-+\s*$|<--- More --->\s*$|Press any key to continue").unwrap())
+    RE.get_or_init(|| Regex::new(r"(?i)-+ ?\(?more(?: \d+%)?\)? ?-+\s*$|<--- More --->\s*$|Press any key to continue|lines \d+-\d+(?:/\d+)?(?: \(END\))?\s*$").unwrap())
+}
+
+/// A `less`-style pager that reached the end of the output and waits for `q`
+/// (ISE ADE-OS `show logging`, Linux `journalctl` without `--no-pager`).
+fn end_regex() -> &'static Regex {
+    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"\(END\)\s*$").unwrap())
+}
+
+/// A password question from the device itself, not the command's output:
+/// `[sudo] password for cumulus:`, `Password:`, `admin@10.0.0.1's password:`.
+/// A probe never answers these; the command is aborted instead.
+pub fn password_regex() -> &'static Regex {
+    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"(?im)^(?:\[sudo\] password for \S+|.*password(?: for \S+)?|passphrase for .*|enter .*passphrase.*):\s*$").unwrap())
 }
 
 /// Remove escape sequences, carriage returns and backspaces.
@@ -97,7 +112,7 @@ pub fn clean(raw: &str) -> String {
     let out = strip_controls(raw);
     // leftover pager prompts on their own line
     static MORE_LINE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
-    let more_line = MORE_LINE.get_or_init(|| Regex::new(r"(?m)^\s*-+ ?\(?[Mm]ore\)?(?: \d+%)? ?-+\s*$\n?|^<--- More --->\s*$\n?").unwrap());
+    let more_line = MORE_LINE.get_or_init(|| Regex::new(r"(?m)^\s*-+ ?\(?[Mm]ore(?: \d+%)?\)? ?-+\s*$\n?|^<--- More --->\s*$\n?|^\s*(?:lines \d+-\d+(?:/\d+)? ?)?\(END\)\s*$\n?|^\s*lines \d+-\d+(?:/\d+)?\s*$\n?").unwrap());
     more_line.replace_all(&out, "").into_owned()
 }
 
@@ -187,11 +202,20 @@ impl Runner<'_> {
                 let tail: String = text.chars().rev().take(200).collect::<Vec<_>>().into_iter().rev().collect();
                 // pager text must survive here, so no clean()
                 let tail = strip_controls(&tail);
-                if more_regex().is_match(tail.trim_end()) {
+                if end_regex().is_match(tail.trim_end()) {
+                    (self.send)(b"q".to_vec());
+                } else if more_regex().is_match(tail.trim_end()) {
                     (self.send)(b" ".to_vec());
                 } else if tail.lines().last().is_some_and(|l| prompt_regex().is_match(l.trim_end())) && text.contains('\n') {
                     break Ok(());
                 }
+            } else if quiet_since.elapsed() > Duration::from_millis(700) && text.lines().last().is_some_and(|l| password_regex().is_match(strip_controls(l).trim_end())) {
+                // the command wants a password (sudo, a nested ssh, an enable
+                // prompt): abort it so the next command is never typed into
+                // the password field, and report it
+                (self.send)(vec![0x03]);
+                tokio::time::sleep(Duration::from_millis(400)).await;
+                break Err(anyhow!("`{command}` asked for a password"));
             } else if let (Some(a), true) = (answers, quiet_since.elapsed() > Duration::from_millis(700) && seen_len > answered_at) {
                 // the device went quiet on a question: answer it once
                 let tail = strip_controls(&text);
@@ -204,7 +228,8 @@ impl Runner<'_> {
             } else if quiet_since.elapsed() > Duration::from_millis(2500) {
                 // no prompt seen but the device went quiet (a prompt we do not recognize)
                 let tail = strip_controls(&text);
-                if tail.trim_end().ends_with(['#', '>', '$', ':']) {
+                let last = tail.lines().last().unwrap_or("").trim_end();
+                if tail.trim_end().ends_with(['#', '>', '$', ':']) && !password_regex().is_match(last) {
                     break Ok(());
                 }
             }
@@ -243,6 +268,63 @@ mod tests {
         for p in ["Password:", "Building configuration...", "% Invalid input detected at '^' marker."] {
             assert!(!prompt_regex().is_match(p), "{p}");
         }
+    }
+
+    #[test]
+    fn pager_end_and_password_prompts() {
+        for p in ["(END)", "lines 1-45", "lines 1-45/120 (END)", " --More-- ", "---(more 35%)---"] {
+            assert!(more_regex().is_match(p) || end_regex().is_match(p), "{p}");
+        }
+        assert!(end_regex().is_match("(END)"));
+        assert!(!end_regex().is_match("Line protocol is up (END)x"));
+        for p in ["[sudo] password for cumulus:", "Password:", "admin@10.0.0.1's password: ", "Enter passphrase for key '/home/x/.ssh/id_rsa':"] {
+            assert!(password_regex().is_match(p), "{p}");
+            assert!(!prompt_regex().is_match(p), "{p}");
+        }
+        for p in ["sw1#", "Last password change: never", "cumulus@leaf01:~$"] {
+            assert!(!password_regex().is_match(p), "{p}");
+        }
+    }
+
+    #[tokio::test]
+    async fn aborts_on_a_sudo_password_prompt() {
+        let capture = Arc::new(Capture::default());
+        let sent: Arc<Mutex<Vec<Vec<u8>>>> = Arc::default();
+        let s2 = sent.clone();
+        let send = move |b: Vec<u8>| s2.lock().unwrap().push(b);
+        let runner = Runner { capture: &capture, send: &send };
+        let cap = capture.clone();
+        let feeder = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            cap.feed(b"sudo smonctl\r\n[sudo] password for cumulus: ");
+            tokio::time::sleep(Duration::from_millis(1400)).await;
+            cap.feed(b"\r\ncumulus@leaf01:~$ ");
+        });
+        let out = runner.run("sudo smonctl", Duration::from_secs(5)).await;
+        feeder.await.unwrap();
+        let e = out.unwrap_err().to_string();
+        assert!(e.contains("asked for a password"), "{e}");
+        assert!(sent.lock().unwrap().iter().any(|b| b == &vec![0x03]), "Ctrl-C sent");
+    }
+
+    #[tokio::test]
+    async fn quits_a_less_pager_at_end() {
+        let capture = Arc::new(Capture::default());
+        let sent: Arc<Mutex<Vec<Vec<u8>>>> = Arc::default();
+        let s2 = sent.clone();
+        let send = move |b: Vec<u8>| s2.lock().unwrap().push(b);
+        let runner = Runner { capture: &capture, send: &send };
+        let cap = capture.clone();
+        let feeder = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            cap.feed(b"show logging system | last 2\r\nline one\r\nline two\r\n(END)");
+            tokio::time::sleep(Duration::from_millis(400)).await;
+            cap.feed(b"\r\nise01/admin# ");
+        });
+        let out = runner.run("show logging system | last 2", Duration::from_secs(5)).await.unwrap();
+        feeder.await.unwrap();
+        assert!(sent.lock().unwrap().iter().any(|b| b == b"q"), "q sent");
+        assert_eq!(out, "line one\nline two");
     }
 
     #[test]
