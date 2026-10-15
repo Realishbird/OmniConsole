@@ -6,16 +6,16 @@ Nothing changes a device without you: read-only commands run on approval, config
 
 ## Install
 
-Every push builds installers for all six platforms. Open the latest run under [Actions](https://github.com/Realishbird/OmniConsole/actions), scroll to **Artifacts** and download `OmniConsole-<platform>`:
+Every push builds installers for all six platforms. Open the latest run under [Actions](https://github.com/Realishbird/OmniConsole/actions), scroll to **Artifacts** and download `OmniConsole-<version>-<platform>`. The file inside is named the same way, so `OmniConsole-0.6.0-windows-x64.msi` is version 0.6.0 for 64-bit Windows. The version goes up with every batch (0.6.0 = batch 6).
 
 | Platform | Artifact | Installer |
 | --- | --- | --- |
-| Windows x64 | `OmniConsole-windows-x64` | `.msi` or `.exe` |
-| Windows ARM64 | `OmniConsole-windows-arm64` | `.exe` |
-| macOS Apple Silicon | `OmniConsole-macos-arm64` | `.dmg` |
-| macOS Intel | `OmniConsole-macos-x64` | `.dmg` |
-| Linux x64 | `OmniConsole-linux-x64` | `.deb`, `.rpm` or `.AppImage` |
-| Linux ARM64 | `OmniConsole-linux-arm64` | `.deb`, `.rpm` or `.AppImage` |
+| Windows x64 | `OmniConsole-<version>-windows-x64` | `.msi` or `.exe` |
+| Windows ARM64 | `OmniConsole-<version>-windows-arm64` | `.exe` |
+| macOS Apple Silicon | `OmniConsole-<version>-macos-arm64` | `.dmg` |
+| macOS Intel | `OmniConsole-<version>-macos-x64` | `.dmg` |
+| Linux x64 | `OmniConsole-<version>-linux-x64` | `.deb`, `.rpm` or `.AppImage` |
+| Linux ARM64 | `OmniConsole-<version>-linux-arm64` | `.deb`, `.rpm` or `.AppImage` |
 
 The builds are unsigned. Windows SmartScreen and macOS Gatekeeper will ask once; on macOS use right-click → Open the first time.
 
