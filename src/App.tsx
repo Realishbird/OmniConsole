@@ -5,13 +5,16 @@ import PromptDialog from "./components/PromptDialog";
 import ConfirmDialog from "./components/ConfirmDialog";
 import SettingsDialog from "./components/SettingsDialog";
 import SnippetsDialog from "./components/SnippetsDialog";
+import CredentialsDialog from "./components/CredentialsDialog";
+import UnlockDialog from "./components/UnlockDialog";
+import { EMPTY_LOCKER, loadLocker, resolveFor, saveLocker, vaultLock, vaultStatus, vaultTouch, type Locker, type VaultStatus } from "./lib/credentials";
 import ToolsPanel, { type ToolsSection } from "./components/ToolsPanel";
 import CommandPalette, { type PaletteItem } from "./components/CommandPalette";
 import Completions from "./components/Completions";
 import NameDialog from "./components/NameDialog";
 import { complete, launchExternal, openWindow, type Completion } from "./lib/files";
 import {
-  BookmarkIcon, ChecksIcon, CloseIcon, CommandIcon, DownIcon, Logo, PlusIcon, RecordIcon, SaveIcon, SearchIcon, SettingsIcon,
+  BookmarkIcon, ChecksIcon, CloseIcon, CommandIcon, DownIcon, LockIcon, Logo, PlusIcon, RecordIcon, SaveIcon, SearchIcon, SettingsIcon, UnlockIcon,
   SidebarIcon, SplitDownIcon, SplitRightIcon, UpIcon,
 } from "./components/Icons";
 import {
@@ -109,6 +112,10 @@ export default function App() {
   const [confirm, setConfirm] = useState<Confirm | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [snippetsOpen, setSnippetsOpen] = useState(false);
+  const [credentialsOpen, setCredentialsOpen] = useState(false);
+  const [locker, setLocker] = useState<Locker>(EMPTY_LOCKER);
+  const [vault, setVault] = useState<VaultStatus>({ configured: false, locked: false, autoLockMinutes: 0 });
+  const [unlockAsk, setUnlockAsk] = useState<{ reason: string; skipLabel?: string; resolve: (ok: boolean) => void } | null>(null);
   const [palette, setPalette] = useState<{ initial: string; placeholder?: string; only?: string } | null>(null);
   const [quick, setQuick] = useState("");
   const [quickInvalid, setQuickInvalid] = useState(false);
@@ -149,7 +156,42 @@ export default function App() {
     loadData<Snippet[]>("snippets").then((s) => setSnippets(Array.isArray(s) ? s : [])).catch(() => {});
     loadData<HistoryEntry[]>("history").then((h) => setHistory(Array.isArray(h) ? h : [])).catch(() => {});
     loadData<Layout[]>("workspace").then((l) => setLayouts(Array.isArray(l) ? l : [])).catch(() => {});
+    loadLocker().then(setLocker).catch((e) => console.error("loading credentials", e));
+    vaultStatus().then(setVault).catch(() => {});
   }, []);
+
+  // the vault auto-locks in the backend; the lock icon follows it, and activity keeps it open
+  useEffect(() => {
+    const poll = window.setInterval(() => void vaultStatus().then(setVault).catch(() => {}), 30_000);
+    let last = 0;
+    function activity() {
+      const now = Date.now();
+      if (now - last > 20_000) {
+        last = now;
+        void vaultTouch();
+      }
+    }
+    window.addEventListener("keydown", activity);
+    window.addEventListener("mousedown", activity);
+    return () => {
+      window.clearInterval(poll);
+      window.removeEventListener("keydown", activity);
+      window.removeEventListener("mousedown", activity);
+    };
+  }, []);
+
+  const lockerRef = useRef(locker);
+  lockerRef.current = locker;
+  const vaultRef = useRef(vault);
+  vaultRef.current = vault;
+
+  const updateLocker = useCallback((next: Locker) => {
+    setLocker(next);
+    void saveLocker(next).catch((e) => console.error("saving credentials", e));
+  }, []);
+
+  /** Ask for the vault passphrase; resolves false when the user declines. */
+  const askUnlock = useCallback((reason: string, skipLabel?: string) => new Promise<boolean>((resolve) => setUnlockAsk({ reason, skipLabel, resolve })), []);
 
   // a second window opened on a device (index.html?connect=<id>) connects to it once devices are loaded
   const autoConnected = useRef(false);
@@ -439,6 +481,7 @@ export default function App() {
           ? { host: jumpDevice.host, port: jumpDevice.port, username: jumpDevice.username, deviceId: jumpDevice.id, authMethod: jumpDevice.authMethod, keyPath: jumpDevice.keyPath }
           : null,
       keepalive: d.keepalive,
+      retryLimit: lockerRef.current.retryLimit,
       serialPort: d.serialPort,
       baud: d.baud,
       dataBits: d.dataBits,
@@ -472,9 +515,14 @@ export default function App() {
         });
         if (!ok) return;
       }
+      if (vaultRef.current.locked && d.protocol !== "serial") {
+        const r = resolveFor(lockerRef.current, d);
+        const who = r.credential ? `the profile ${r.credential.name}` : "its saved password";
+        await askUnlock(`${d.name} logs in with ${who}. Unlock the vault to use it, or connect and type the password.`, "Connect and type it");
+      }
       openTab(d.name, specFor(d), d.id);
     },
-    [askConfirm, openTab, specFor],
+    [askConfirm, askUnlock, openTab, specFor],
   );
 
   function quickConnect(e: React.FormEvent) {
@@ -722,6 +770,8 @@ export default function App() {
     };
     action("quick", "Quick connect", () => quickRef.current?.focus(), `${mod}+Shift+T`);
     action("add", "Add device", () => setEditing({ device: newDevice(), isNew: true }));
+    action("creds", "Credentials: profiles, defaults, vault", () => setCredentialsOpen(true), `${mod}+Shift+K`);
+    action("lock", vault.locked ? "Unlock the credential vault" : "Lock the credential vault", () => vault.locked ? void askUnlock("Unlock the credential vault.") : void vaultLock().then(setVault), undefined, vault.configured);
     action("close", "Close tab", () => active && void closeTab(active.key), `${mod}+Shift+W`, !!active);
     action("dup", "Duplicate session in a new tab", () => active && openTab(active.title, active.session.spec, active.deviceId), undefined, !!active);
     action("window", "New window", () => void openWindow("").catch((e) => showToast(String(e))), `${mod}+Shift+N`);
@@ -784,7 +834,7 @@ export default function App() {
     }
     return palette.only ? items.filter((i) => i.group === palette.only) : items;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [palette, tabs, devices, snippets, history, active, split, splitDir, sidebarOpen, layouts]);
+  }, [palette, tabs, devices, snippets, history, active, split, splitDir, sidebarOpen, layouts, vault, askUnlock]);
 
   /* ---------- keyboard ---------- */
 
@@ -806,6 +856,7 @@ export default function App() {
       else if (e.ctrlKey && !e.shiftKey && !e.altKey && e.code === "Space") void completeLine();
       else if (modKey && e.shiftKey && key === "n") void openWindow("").catch((err) => showToast(String(err)));
       else if (modKey && e.shiftKey && key === "p") setPalette({ initial: "" });
+      else if (modKey && e.shiftKey && key === "k") setCredentialsOpen(true);
       else if (modKey && !e.shiftKey && key === "k") setPalette({ initial: "" });
       else if (modKey && e.shiftKey && key === "h") active && setPalette({ initial: "", only: "History", placeholder: "Search command history" });
       else if (modKey && e.shiftKey && key === "t") quickRef.current?.focus();
@@ -882,6 +933,7 @@ export default function App() {
           onToggleFavorite={(d) => void persist(devices.map((x) => (x.id === d.id ? { ...x, favorite: !x.favorite } : x)))}
           onImport={() => void onImport()}
           onExport={() => void onExport()}
+          onCredentials={() => setCredentialsOpen(true)}
         />
       ) : (
         <div />
@@ -925,6 +977,9 @@ export default function App() {
           </button>
           <button className={`icon-btn${toolsOpen ? " on" : ""}`} title={`Tools: health checks and configs (${mod}+Shift+I)`} onClick={() => setToolsOpen((v) => !v)}>
             <ChecksIcon />
+          </button>
+          <button className={`icon-btn${vault.locked ? " locked" : ""}`} title={vault.configured ? (vault.locked ? "Credential vault locked: click to unlock" : "Credential vault unlocked: click to lock") : `Credentials (${mod}+Shift+K)`} onClick={() => vault.configured ? (vault.locked ? void askUnlock("Unlock the credential vault.") : void vaultLock().then(setVault)) : setCredentialsOpen(true)}>
+            {vault.locked ? <LockIcon /> : <UnlockIcon />}
           </button>
           <button className="icon-btn" title={`Settings (${mod}+,)`} onClick={() => setSettingsOpen(true)}>
             <SettingsIcon />
@@ -1133,7 +1188,27 @@ export default function App() {
 
       {active?.prompt && <PromptDialog key={active.key + active.prompt.kind + active.prompt.message} prompt={active.prompt} onAnswer={(v) => active.session.answer(v)} />}
       {editing && (
-        <DeviceDialog device={editing.device} isNew={editing.isNew} devices={devices} onSave={(d, s) => void onSaveDevice(d, s)} onCancel={() => setEditing(null)} />
+        <DeviceDialog device={editing.device} isNew={editing.isNew} devices={devices} locker={locker} onCredentials={() => setCredentialsOpen(true)} onSave={(d, s) => void onSaveDevice(d, s)} onCancel={() => setEditing(null)} />
+      )}
+      {credentialsOpen && (
+        <CredentialsDialog
+          locker={locker}
+          vault={vault}
+          devices={devices}
+          onChange={updateLocker}
+          onVault={setVault}
+          onToast={showToast}
+          onUnlock={() => askUnlock("This needs the vault open.")}
+          onClose={() => { setCredentialsOpen(false); void loadLocker().then(setLocker).catch(() => {}); active?.session.focus(); }}
+        />
+      )}
+      {unlockAsk && (
+        <UnlockDialog
+          reason={unlockAsk.reason}
+          skipLabel={unlockAsk.skipLabel}
+          onUnlocked={(v) => { setVault(v); unlockAsk.resolve(true); setUnlockAsk(null); }}
+          onCancel={() => { unlockAsk.resolve(false); setUnlockAsk(null); }}
+        />
       )}
       {settingsOpen && <SettingsDialog settings={settings} onChange={setSettings} onClose={() => { setSettingsOpen(false); active?.session.focus(); }} />}
       {snippetsOpen && (

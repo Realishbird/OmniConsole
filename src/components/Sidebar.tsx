@@ -18,6 +18,7 @@ interface Props {
   onToggleFavorite: (device: Device) => void;
   onImport: () => void;
   onExport: () => void;
+  onCredentials: () => void;
 }
 
 interface Menu {
@@ -258,6 +259,8 @@ export default function Sidebar(props: Props) {
                 <hr />
                 <button onClick={props.onImport}>Import devices (JSON or CSV)…</button>
                 <button onClick={props.onExport}>Export devices…</button>
+                <hr />
+                <button onClick={props.onCredentials}>Credentials…</button>
               </>
             ) : (
               <button onClick={() => props.onAdd(presetFor(menu.group))}>

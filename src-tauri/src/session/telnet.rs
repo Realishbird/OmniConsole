@@ -145,8 +145,10 @@ pub async fn run(spec: &ConnectSpec, io: &Io, mut input: mpsc::UnboundedReceiver
     io.status("connected", format!("Telnet {host_port}"));
 
     let mut t = Telnet { state: State::Data, sub: Vec::new(), naws: false, cols: spec.cols, rows: spec.rows };
-    let mut login = spec.auto_login.then(|| super::autologin::AutoLogin::new(&spec.username));
-    let mut password = spec.password.clone().or_else(|| spec.device_id.as_deref().and_then(crate::store::password_get));
+    let resolved = spec.device_id.as_deref().map(|id| crate::credentials::resolve(&io.config_dir, id)).unwrap_or_default();
+    let username = resolved.username.clone().filter(|_| !resolved.source.is_empty()).unwrap_or_else(|| spec.username.clone());
+    let mut login = spec.auto_login.then(|| super::autologin::AutoLogin::new(&username));
+    let mut password = spec.password.clone().or(resolved.password.clone());
     let mut buf = vec![0u8; 16 * 1024];
     loop {
         tokio::select! {

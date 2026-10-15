@@ -1,6 +1,6 @@
 [package]
 name = "omniconsole"
-version = "0.7.0"
+version = "0.8.0"
 description = "OmniConsole: SSH, Telnet and serial console client for network engineers"
 authors = ["Realishbird"]
 edition = "2021"
@@ -35,6 +35,9 @@ similar = "2"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 russh-sftp = "3"
+aes-gcm = "0.11"
+argon2 = { version = "0.6", default-features = false, features = ["alloc"] }
+rand = "0.8"
 
 [profile.release]
 codegen-units = 1

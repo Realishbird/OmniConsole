@@ -26,6 +26,8 @@ export interface Device {
   lastConnected?: number | null;
   notes: string;
 
+  /** credential profile id; empty = this device's own saved password, or a site/customer default */
+  credentialId: string;
   authMethod: AuthMethod;
   keyPath: string;
   jumpDeviceId: string;
@@ -66,6 +68,8 @@ export interface ConnectSpec {
   keyPath: string;
   jump?: JumpSpec | null;
   keepalive: number;
+  /** password prompts before the connection gives up */
+  retryLimit?: number;
   serialPort: string;
   baud: number;
   dataBits: number;
@@ -137,6 +141,7 @@ export function newDevice(protocol: Protocol = "ssh", site = ""): Device {
     favorite: false,
     lastConnected: null,
     notes: "",
+    credentialId: "",
     authMethod: "password",
     keyPath: "",
     jumpDeviceId: "",

@@ -4,6 +4,7 @@
 mod ai;
 mod cisco;
 mod commands;
+mod credentials;
 mod deploy;
 mod files;
 mod ise_api;
@@ -87,6 +88,20 @@ pub fn run() {
             platforms::collect_run,
             ise_api::ise_api_checks,
             ise_api::ise_api_credential,
+            credentials::credentials_load,
+            credentials::credentials_save,
+            credentials::credential_secret_set,
+            credentials::credential_secret_get,
+            credentials::credential_delete,
+            credentials::credential_effective,
+            credentials::credentials_export,
+            credentials::credentials_import,
+            credentials::credential_test,
+            credentials::vault_status,
+            credentials::vault_setup,
+            credentials::vault_lock,
+            credentials::vault_unlock,
+            credentials::vault_touch,
             files::files_open,
             files::files_close,
             files::files_list,

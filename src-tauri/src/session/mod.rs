@@ -65,6 +65,9 @@ pub struct ConnectSpec {
     pub key_path: String,
     #[serde(default)]
     pub jump: Option<Box<JumpSpec>>,
+    /// password prompts before the connection gives up
+    #[serde(default = "default_retries")]
+    pub retry_limit: u32,
     /// seconds, 0 = off
     #[serde(default = "default_keepalive")]
     pub keepalive: u32,
@@ -91,6 +94,10 @@ pub struct ConnectSpec {
 
     pub cols: u16,
     pub rows: u16,
+}
+
+fn default_retries() -> u32 {
+    3
 }
 
 fn default_auth() -> String {

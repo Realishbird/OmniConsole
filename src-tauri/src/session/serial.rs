@@ -61,8 +61,10 @@ pub async fn run(spec: &ConnectSpec, io: &Io, mut input: mpsc::UnboundedReceiver
     let stop = Arc::new(AtomicBool::new(false));
     let (gone_tx, mut gone_rx) = mpsc::unbounded_channel::<String>();
     let (seen_tx, mut seen_rx) = mpsc::unbounded_channel::<Vec<u8>>();
-    let mut login = spec.auto_login.then(|| super::autologin::AutoLogin::new(&spec.username));
-    let mut password = spec.password.clone().or_else(|| spec.device_id.as_deref().and_then(crate::store::password_get));
+    let resolved = spec.device_id.as_deref().map(|id| crate::credentials::resolve(&io.config_dir, id)).unwrap_or_default();
+    let username = resolved.username.clone().filter(|_| !resolved.source.is_empty()).unwrap_or_else(|| spec.username.clone());
+    let mut login = spec.auto_login.then(|| super::autologin::AutoLogin::new(&username));
+    let mut password = spec.password.clone().or(resolved.password.clone());
     let reader_io = io.clone();
     let reader_stop = stop.clone();
     let watch_login = login.is_some();

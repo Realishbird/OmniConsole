@@ -6,7 +6,7 @@ Nothing changes a device without you: read-only commands run on approval, config
 
 ## Install
 
-Every push builds installers for all six platforms. Open the latest run under [Actions](https://github.com/Realishbird/OmniConsole/actions), scroll to **Artifacts** and download `OmniConsole-<version>-<platform>`. The file inside is named the same way, so `OmniConsole-0.7.0-windows-x64.msi` is version 0.7.0 for 64-bit Windows. The version goes up with every batch (0.7.0 = batch 7).
+Every push builds installers for all six platforms. Open the latest run under [Actions](https://github.com/Realishbird/OmniConsole/actions), scroll to **Artifacts** and download `OmniConsole-<version>-<platform>`. The file inside is named the same way, so `OmniConsole-0.8.0-windows-x64.msi` is version 0.8.0 for 64-bit Windows. The version goes up with every batch (0.8.0 = batch 8).
 
 | Platform | Artifact | Installer |
 | --- | --- | --- |
@@ -27,6 +27,12 @@ The builds are unsigned. Windows SmartScreen and macOS Gatekeeper will ask once;
 4. **Run health checks**, ask the assistant, back up the config, or deploy a template. Anything that changes the device shows you the exact lines first.
 
 Passwords and key passphrases go in the operating system's credential store (Windows Credential Manager, macOS Keychain, Linux Secret Service). They are never written to files, logs, exports or AI requests.
+
+### Credential locker (Ctrl/Cmd+Shift+K, or Devices menu → Credentials)
+- **Profiles**: a named username + password (or key file + passphrase, or SSH agent), optional domain, enable secret, tags, notes and the time of the last change. Create, search, duplicate (without secrets), delete; a device picks a profile in its Login tab, so changing the password once updates every device that uses it. Profiles can be **temporary**: the secrets are deleted when they expire.
+- **Defaults per site and customer**: a device without a profile of its own uses its site's default, then its customer's; "This device only" keeps a device on its own saved password. The Login tab says which applies, and each profile shows the devices that use it. **Test login** tries exactly that profile against a saved SSH device and disconnects.
+- **Protection**: a vault passphrase (argon2id verifier in the OS store) locks the app out of every stored secret until unlocked; auto-lock after idle time; growing delays after wrong passphrases; masked reveal (15 s) and copy with a timed clipboard clear; a password-prompt limit per connection, and a rejected stored password is never retried with another profile. Jump hosts use their own credentials. Keyboard-interactive/MFA and host-key prompts stay interactive.
+- **Encrypted export/import** of profiles with their secrets (AES-256-GCM, key from a separate export passphrase); the device export still contains no secrets.
 
 ## What it does
 

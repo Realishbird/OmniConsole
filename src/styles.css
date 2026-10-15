@@ -597,3 +597,26 @@ button.link { background: none; border: 0; color: var(--accent); cursor: pointer
 .ise-api-form input[type="text"], .ise-api-form input:not([type]), .ise-api-form input[type="password"] { height: 28px; font: inherit; font-size: 12px; padding: 0 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); min-width: 0; }
 .ise-api-form .check { grid-column: 1; }
 .ise-api-form .btn.primary { grid-column: 2; justify-self: end; }
+
+/* credential locker (batch 8) */
+.vault-pill { font-size: 11px; font-weight: 500; padding: 1px 8px; border-radius: 10px; border: 1px solid var(--border); color: var(--text-quiet); margin-left: 8px; vertical-align: middle; }
+.vault-pill.locked { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 50%, var(--border)); }
+.icon-btn.locked { color: var(--warn); }
+.dialog.creds { width: 820px; }
+.cred-badge { font-size: 10.5px; margin-left: 6px; padding: 0 6px; border-radius: 8px; background: color-mix(in srgb, var(--warn) 20%, transparent); color: var(--warn); }
+.cred-form { grid-template-columns: 110px 1fr; }
+.cred-form textarea { height: 48px; }
+.secret-field { display: flex; align-items: center; gap: 6px; }
+.secret-field input { flex: 1; min-width: 0; }
+.secret-field .icon-btn { width: 28px; height: 28px; flex: none; }
+.secret-shown { flex: 1; font: 13px ui-monospace, Menlo, Consolas, monospace; padding: 5px 9px; border: 1px solid var(--accent); border-radius: 6px; background: var(--bg); cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cred-users { display: flex; flex-wrap: wrap; gap: 4px; font-size: 12px; }
+.cred-user { padding: 1px 8px; border-radius: 10px; border: 1px solid var(--border); background: var(--bg); }
+.cred-user small { color: var(--text-quiet); }
+.cred-stack { display: flex; flex-direction: column; gap: 6px; }
+.cred-stack input { width: 100%; }
+.cred-defaults { min-height: 340px; font-size: 13px; }
+.cred-defaults p { margin: 0 0 10px; }
+.cred-default-row { display: grid; grid-template-columns: 1fr auto 240px; gap: 10px; align-items: center; padding: 6px 4px; border-bottom: 1px solid var(--border); }
+.cred-default-row select { height: 28px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font: inherit; font-size: 12px; }
+.ok-text { color: var(--good, #3fb950); }

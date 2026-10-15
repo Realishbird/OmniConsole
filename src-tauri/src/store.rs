@@ -53,6 +53,10 @@ pub struct Device {
     #[serde(default)]
     pub notes: String,
 
+    /// credential profile (credentials.json); empty = the device's own saved password or a site/customer default
+    #[serde(default)]
+    pub credential_id: String,
+
     // SSH
     /// "password" | "key" | "agent"
     #[serde(default = "default_auth")]
@@ -372,17 +376,14 @@ pub fn secret_name(kind: &str, device_id: &str) -> Result<String> {
         "passphrase" => Ok(format!("passphrase/{device_id}")),
         // AI provider API keys, keyed by the provider id
         "apikey" => Ok(format!("ai/{device_id}")),
+        // credential locker profiles, keyed by the profile id
+        "cred-password" => Ok(format!("cred/{device_id}")),
+        "cred-enable" => Ok(format!("cred-enable/{device_id}")),
+        "cred-passphrase" => Ok(format!("cred-passphrase/{device_id}")),
         _ => bail!("unknown secret kind {kind}"),
     }
 }
 
-pub fn password_get(device_id: &str) -> Option<String> {
-    secret_get(&format!("device/{device_id}"))
-}
-
-pub fn passphrase_get(device_id: &str) -> Option<String> {
-    secret_get(&format!("passphrase/{device_id}"))
-}
 
 #[cfg(test)]
 mod tests {

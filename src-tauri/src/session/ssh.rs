@@ -109,6 +109,7 @@ struct Login<'a> {
     password: Option<String>,
     auth_method: &'a str,
     key_path: &'a str,
+    retry_limit: u32,
 }
 
 /// keyboard-interactive: hidden prompts get the password, others are asked
@@ -170,7 +171,7 @@ async fn load_key(io: &Io, login: &Login<'_>) -> Result<Option<PrivateKey>> {
             return Ok(None);
         }
     }
-    if let Some(saved) = login.device_id.and_then(store::passphrase_get) {
+    if let Some(saved) = login.device_id.and_then(|id| crate::credentials::passphrase_for(&io.config_dir, id)) {
         if let Ok(k) = keys::load_secret_key(&path, Some(&saved)) {
             return Ok(Some(k));
         }
@@ -252,6 +253,24 @@ async fn try_agent(session: &mut client::Handle<Client>, io: &Io, user: &str) ->
 /// then up to three password prompts. Returns the user name.
 async fn authenticate(session: &mut client::Handle<Client>, io: &Io, login: &Login<'_>) -> Result<String> {
     let host_port = login.host_port;
+    // a credential profile assigned to the device (or its site/customer) supplies the
+    // username, method and key; the device's own fields are the fallback
+    let resolved = login.device_id.map(|id| crate::credentials::resolve(&io.config_dir, id)).unwrap_or_default();
+    let profile = !resolved.source.is_empty();
+    if profile {
+        io.notice(&format!("Logging in with the credential profile {}.", resolved.source));
+    }
+    let key_path = if profile { resolved.key_path.clone().unwrap_or_default() } else { login.key_path.to_string() };
+    let auth_method = if profile { resolved.method.clone().unwrap_or_else(|| "password".into()) } else { login.auth_method.to_string() };
+    let login = &Login {
+        host_port,
+        username: if profile && resolved.username.is_some() { resolved.username.as_deref().unwrap_or("") } else { login.username },
+        device_id: login.device_id,
+        password: login.password.clone().or(resolved.password.clone()),
+        auth_method: &auth_method,
+        key_path: &key_path,
+        retry_limit: login.retry_limit,
+    };
     let user = if login.username.is_empty() {
         io.ask("username", format!("Username for {host_port}"), None, true)
             .await
@@ -274,14 +293,15 @@ async fn authenticate(session: &mut client::Handle<Client>, io: &Io, login: &Log
         _ => {}
     }
 
-    let known = login.password.clone().or_else(|| login.device_id.and_then(store::password_get));
+    let known = login.password.clone().or_else(|| login.device_id.and_then(|id| crate::credentials::password_for(&io.config_dir, id)));
     if let Some(pw) = known {
         if try_password(session, io, &user, &pw).await? {
             return Ok(user);
         }
         io.notice("The saved password was not accepted.");
     }
-    for _ in 0..3 {
+    let limit = login.retry_limit.max(1);
+    for _ in 0..limit {
         let Some(pw) = io.ask("password", format!("Password for {user}@{host_port}"), None, false).await else {
             bail!("login cancelled");
         };
@@ -290,7 +310,78 @@ async fn authenticate(session: &mut client::Handle<Client>, io: &Io, login: &Log
         }
         io.notice("Access denied.");
     }
-    bail!("access denied for {user}@{host_port}")
+    bail!("access denied for {user}@{host_port} after {limit} attempts")
+}
+
+/// Connect and authenticate once with the given profile, then disconnect.
+/// Used by the credential locker's "test" button. No other secret is tried.
+#[allow(clippy::too_many_arguments)]
+pub async fn test_login(config_dir: &std::path::Path, host: &str, port: u16, user: &str, method: &str, key_path: &str, password: Option<&str>, passphrase: Option<&str>) -> Result<()> {
+    struct Quiet {
+        config_dir: PathBuf,
+        host_port: String,
+    }
+    impl client::Handler for Quiet {
+        type Error = anyhow::Error;
+        async fn check_server_key(&mut self, server_key: &PublicKeyOrCertificate) -> Result<bool> {
+            // only hosts already trusted by a real session pass the test
+            let mut key = match server_key {
+                PublicKeyOrCertificate::PublicKey { key, .. } => key.clone(),
+                PublicKeyOrCertificate::Certificate(cert) => cert.public_key().clone().into(),
+            };
+            key.set_comment("");
+            Ok(matches!(store::check_host_key(&self.config_dir, &self.host_port, &key.to_openssh()?), HostKeyCheck::Known))
+        }
+    }
+    let port = if port == 0 { 22 } else { port };
+    let host_port = format!("{host}:{port}");
+    let handler = Quiet { config_dir: config_dir.to_path_buf(), host_port: host_port.clone() };
+    let mut session = tokio::time::timeout(CONNECT_TIMEOUT, client::connect(config(0), (host, port), handler))
+        .await
+        .map_err(|_| timed_out(&host_port))?
+        .map_err(|e| match e.downcast_ref::<russh::Error>() {
+            Some(russh::Error::UnknownKey) => anyhow!("the host key of {host_port} is not trusted yet; connect to the device once first"),
+            _ => e,
+        })?;
+    let ok = match method {
+        "key" => {
+            let path = expand_home(key_path.trim());
+            let key = match keys::load_secret_key(&path, passphrase) {
+                Ok(k) => k,
+                Err(keys::Error::KeyIsEncrypted) => bail!("the key {} needs a passphrase", path.display()),
+                Err(e) => bail!("could not read the key {}: {e}", path.display()),
+            };
+            let hash = session.best_supported_rsa_hash().await?.flatten();
+            session.authenticate_publickey(user, PrivateKeyWithHashAlg::new(Arc::new(key), hash)).await?.success()
+        }
+        _ => {
+            let Some(pw) = password else { bail!("the profile has no password saved") };
+            let r = session.authenticate_password(user, pw).await?.success();
+            if r {
+                true
+            } else {
+                // keyboard-interactive with the same password, like a real login
+                let mut reply = session.authenticate_keyboard_interactive_start(user, None).await?;
+                let mut accepted = false;
+                for _ in 0..3 {
+                    match reply {
+                        KeyboardInteractiveAuthResponse::Success => {
+                            accepted = true;
+                            break;
+                        }
+                        KeyboardInteractiveAuthResponse::Failure { .. } => break,
+                        KeyboardInteractiveAuthResponse::InfoRequest { prompts, .. } => {
+                            let answers = prompts.iter().map(|_| pw.to_string()).collect();
+                            reply = session.authenticate_keyboard_interactive_respond(answers).await?;
+                        }
+                    }
+                }
+                accepted
+            }
+        }
+    };
+    let _ = session.disconnect(Disconnect::ByApplication, "credential test", "en").await;
+    if ok { Ok(()) } else { bail!("{host_port} rejected the login for {user}") }
 }
 
 fn config(keepalive: u32) -> Arc<client::Config> {
@@ -345,6 +436,7 @@ pub async fn connect(spec: &ConnectSpec, io: &Io) -> Result<Connected> {
                 password: None,
                 auth_method: &jump.auth_method,
                 key_path: &jump.key_path,
+                retry_limit: spec.retry_limit,
             },
         )
         .await
@@ -376,6 +468,7 @@ pub async fn connect(spec: &ConnectSpec, io: &Io) -> Result<Connected> {
             password: spec.password.clone(),
             auth_method: &spec.auth_method,
             key_path: &spec.key_path,
+            retry_limit: spec.retry_limit,
         },
     )
     .await?;
