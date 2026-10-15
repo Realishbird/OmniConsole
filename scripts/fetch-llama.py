@@ -53,6 +53,23 @@ def download(url):
         return r.read()
 
 
+def find_release(tag):
+    """The tagged release, or the newest one that carries prebuilt binaries.
+
+    llama.cpp's "latest" release can be a version tag with sources only; the
+    binaries ride the b#### builds, so walk the list until one has them.
+    """
+    if tag:
+        return api(f"https://api.github.com/repos/{REPO}/releases/tags/{tag}")
+    for page in range(1, 6):
+        for rel in api(f"https://api.github.com/repos/{REPO}/releases?per_page=30&page={page}"):
+            if rel.get("draft"):
+                continue
+            if any(re.search(r"-bin-", a["name"]) for a in rel.get("assets", [])):
+                return rel
+    sys.exit("no llama.cpp release with prebuilt binaries found")
+
+
 def pick(assets, patterns):
     for pat in patterns:
         for a in assets:
@@ -102,7 +119,7 @@ def main():
         if n != "README.txt":
             p = os.path.join(out, n)
             shutil.rmtree(p) if os.path.isdir(p) else os.remove(p)
-    release = api(f"https://api.github.com/repos/{REPO}/releases/{'tags/' + tag if tag else 'latest'}")
+    release = find_release(tag)
     assets = release.get("assets", [])
     print(f"llama.cpp {release['tag_name']}: {len(assets)} assets")
     main_asset = pick(assets, PREFERENCES.get(target, []))
@@ -110,6 +127,7 @@ def main():
         with open(os.path.join(out, "UNAVAILABLE"), "w") as f:
             f.write(f"no llama.cpp {release['tag_name']} asset for {target}\n")
         print(f"no asset for {target}; the built-in runtime will be unavailable on this platform")
+        print("assets in that release: " + ", ".join(a["name"] for a in assets[:60]))
         return
     print(f"runtime: {main_asset['name']}")
     extract(main_asset, out)
