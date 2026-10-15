@@ -11,7 +11,7 @@ import type { AiSettings } from "../lib/ai";
 import {
   backupConfig, bundleFiles, cancelChecks, checksCatalog, compareReports, deleteConfig, detectDevice, diffConfigs, fileStamp,
   listConfigs, OS_CHOICES, OS_LABEL, openConfigFolder, outputText, readConfig, revealConfig, runChecks, runCommand, saveBundle, saveReport,
-  searchConfigs, stamp, STATUS_LABEL, STATUS_ORDER, type Backup, type Change, type CheckInfo, type CheckProgress, type CheckReport,
+  searchConfigs, stamp, STATUS_LABEL, STATUS_ORDER, applyExpectedAps, isWirelessController, mergeApiResults, runIseApiChecks, saveIseApiPassword, type Backup, type Change, type CheckInfo, type CheckProgress, type CheckReport,
   type CheckResult, type DiffResult, type Facts, type Os, type SearchHit, type Status, type Table, type Tier,
 } from "../lib/tools";
 
@@ -62,12 +62,16 @@ interface TabTools {
   osOverride: Os | null;
   /** the "pre" snapshot of a pre/post comparison, kept apart from saved baselines */
   pre: CheckReport | null;
+  /** wireless controllers: how many APs the site should have (0 = not graded) */
+  expectedAps: number;
+  /** ISE: admin API access; the password is only ever in the OS keychain */
+  ise: { host: string; username: string; insecure: boolean; saved: boolean; running: boolean; error: string | null };
 }
 
 const cache = new Map<string, TabTools>();
 
 function fresh(): TabTools {
-  return { facts: null, report: null, baseline: null, baselineLabel: "", running: false, progress: null, live: [], selected: [], error: null, every: 0, tier: "quick", osOverride: null, pre: null };
+  return { facts: null, report: null, baseline: null, baselineLabel: "", running: false, progress: null, live: [], selected: [], error: null, every: 0, tier: "quick", osOverride: null, pre: null, expectedAps: 0, ise: { host: "", username: "", insecure: false, saved: false, running: false, error: null } };
 }
 
 export default function ToolsPanel(props: Props) {
@@ -146,8 +150,9 @@ export default function ToolsPanel(props: Props) {
 
 /* ------------------------------------------------------------- checks */
 
-function Checks({ sessionId, tabKey, deviceName, site, maskSecrets, onSend, onToast, st, update }: Props & { st: TabTools; update: (p: Partial<TabTools>) => void }) {
+function Checks({ sessionId, tabKey, deviceName, site, host, maskSecrets, onSend, onToast, st, update }: Props & { st: TabTools; update: (p: Partial<TabTools>) => void }) {
   const [catalog, setCatalog] = useState<CheckInfo[]>([]);
+  const [isePassword, setIsePassword] = useState("");
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const [pickOpen, setPickOpen] = useState(false);
   const [baselines, setBaselines] = useState<Backup[]>([]);
@@ -171,11 +176,15 @@ function Checks({ sessionId, tabKey, deviceName, site, maskSecrets, onSend, onTo
         facts = await detectDevice(sessionId);
         update({ facts });
       }
-      const report = await runChecks(sessionId, facts, st.selected, st.selected.length ? null : t, (p: CheckProgress) => {
+      let report = await runChecks(sessionId, facts, st.selected, st.selected.length ? null : t, (p: CheckProgress) => {
         const cur = cache.get(tabKey)!;
         if (p.type === "command") update({ progress: { command: p.command, index: p.index, total: p.total } });
         else if (p.type === "result") update({ live: [...cur.live, p.result] });
       }, st.osOverride);
+      report = applyExpectedAps(report, st.expectedAps);
+      // keep the API rows of the previous run until the API runs again
+      const api = st.report?.results.filter((r) => r.category === "ISE API") ?? [];
+      if (api.length) report = mergeApiResults(report, api);
       update({ report, facts: st.osOverride ? { ...report.facts, os: st.osOverride } : report.facts, running: false, progress: null });
       const crit = report.results.filter((r) => r.status === "critical").length;
       const warns = report.results.filter((r) => r.status === "warning").length;
@@ -250,6 +259,40 @@ function Checks({ sessionId, tabKey, deviceName, site, maskSecrets, onSend, onTo
   }
 
   const f = st.facts;
+  const os = st.osOverride ?? f?.os ?? null;
+  const wireless = isWirelessController(f, os);
+  const iseHost = st.ise.host || host;
+
+  async function savePassword() {
+    if (!iseHost) return;
+    try {
+      const saved = await saveIseApiPassword(iseHost, isePassword);
+      setIsePassword("");
+      update({ ise: { ...st.ise, host: iseHost, saved, error: null } });
+      onToast(saved ? "API password saved to the OS keychain" : "API password removed");
+    } catch (e) {
+      update({ ise: { ...st.ise, error: String(e) } });
+    }
+  }
+
+  async function runApi() {
+    if (!iseHost || !st.ise.username) {
+      update({ ise: { ...st.ise, error: "Host and username are needed" } });
+      return;
+    }
+    update({ ise: { ...st.ise, host: iseHost, running: true, error: null } });
+    try {
+      const api = await runIseApiChecks(iseHost, st.ise.username, st.ise.insecure);
+      const base: CheckReport = st.report ?? { os: os ?? "ise", facts: f ?? { os: "ise", hostname: iseHost, model: "", version: "", image: "", uptime: "", serial: "", reloadReason: "" }, started: Math.floor(Date.now() / 1000), finished: Math.floor(Date.now() / 1000), cancelled: false, results: [], outputs: [] };
+      const report = mergeApiResults(base, api.results);
+      update({ report, ise: { ...st.ise, host: iseHost, running: false, saved: true } });
+      const bad = api.results.filter((r) => r.status === "critical" || r.status === "warning").length;
+      onToast(bad ? `API checks: ${bad} need attention` : "API checks healthy");
+    } catch (e) {
+      update({ ise: { ...st.ise, running: false, error: String(e) } });
+    }
+  }
+
   return (
     <div className="tools-body">
       <div className="tools-actions">
@@ -321,7 +364,32 @@ function Checks({ sessionId, tabKey, deviceName, site, maskSecrets, onSend, onTo
           {f.model && <span>{f.model}</span>}
           {f.serial && <span>SN {f.serial}</span>}
           {f.uptime && <span>up {f.uptime}</span>}
+          {wireless && (
+            <label className="expected-aps" title="How many APs this controller should have joined. The Access points check turns warning or critical when fewer are joined.">
+              Expected APs
+              <input type="number" min={0} value={st.expectedAps || ""} placeholder="any" onChange={(e) => {
+                const n = Math.max(0, Number(e.target.value) || 0);
+                update({ expectedAps: n, report: st.report ? applyExpectedAps({ ...st.report, results: st.report.results.map((r) => r.id === "ap-inventory" && /expected/.test(r.summary) ? { ...r, status: r.status === "critical" || r.status === "warning" ? "healthy" : r.status, summary: r.summary.replace(/ \(expected \d+\)$/, "").replace(/^(\d+) of \d+ expected APs joined.*$/, "$1 APs joined"), nextStep: "" } : r) }, n) : null });
+              }} />
+            </label>
+          )}
         </div>
+      )}
+
+      {os === "ise" && (
+        <details className="ise-api" open={!st.report}>
+          <summary>ISE API checks: deployment sync, certificates, AD, licensing, live sessions</summary>
+          <div className="ise-api-form">
+            <input placeholder="Admin node (host or address)" value={st.ise.host} onChange={(e) => update({ ise: { ...st.ise, host: e.target.value } })} spellCheck={false} />
+            <input placeholder="API user (ERS Admin / Super Admin)" value={st.ise.username} onChange={(e) => update({ ise: { ...st.ise, username: e.target.value } })} spellCheck={false} autoComplete="off" />
+            <input type="password" placeholder={st.ise.saved ? "Password saved in the OS keychain" : "Password (saved to the OS keychain)"} value={isePassword} onChange={(e) => setIsePassword(e.target.value)} autoComplete="new-password" />
+            <button className="btn small" disabled={!iseHost || !isePassword} onClick={() => void savePassword()}>Save</button>
+            <label className="check"><input type="checkbox" checked={st.ise.insecure} onChange={(e) => update({ ise: { ...st.ise, insecure: e.target.checked } })} /> Accept self-signed admin certificate</label>
+            <button className="btn primary small" disabled={st.ise.running || !iseHost || !st.ise.username} onClick={() => void runApi()}>{st.ise.running ? "Running…" : "Run API checks"}</button>
+          </div>
+          <div className="quiet small">Uses the OpenAPI (443) and ERS (9060) with the saved password. Enable both under Administration › System › Settings › API Settings. Nothing is changed on ISE.</div>
+          {st.ise.error && <div className="tools-error">{st.ise.error}</div>}
+        </details>
       )}
 
       {st.progress && (

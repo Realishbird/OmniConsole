@@ -356,6 +356,14 @@ pub fn secret_delete(name: &str) -> Result<()> {
 /// Only these secret names may be used, so the UI cannot read other
 /// applications' keychain entries.
 pub fn secret_name(kind: &str, device_id: &str) -> Result<String> {
+    // ISE API credentials are keyed by host name, not by a saved device
+    if kind == "ise-api" {
+        let host = device_id.trim().to_lowercase();
+        if host.is_empty() || host.len() > 253 || !host.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':' | '_' | '[' | ']')) {
+            bail!("bad host name");
+        }
+        return Ok(format!("ise-api/{host}"));
+    }
     if uuid::Uuid::parse_str(device_id).is_err() {
         bail!("bad device id");
     }

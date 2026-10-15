@@ -3,7 +3,7 @@
 // anything is sent (src-tauri/src/ai.rs).
 import { Channel, invoke } from "@tauri-apps/api/core";
 import type { CheckReport, Facts } from "./tools";
-import { OS_LABEL, OS_VENDOR, STATUS_LABEL, type Os } from "./tools";
+import { OS_LABEL, OS_VENDOR, STATUS_LABEL, type Os, isWirelessController } from "./tools";
 
 export type ProviderKind = "ollama" | "lmstudio" | "openai" | "anthropic" | "compatible";
 
@@ -80,7 +80,7 @@ export interface Context {
 }
 
 /** Command syntax that trips models up on a given platform. */
-function platformNotes(os: Os | null, version: string): string[] {
+function platformNotes(os: Os | null, version: string, wireless = false): string[] {
   const notes: string[] = [];
   const v = version;
   switch (os) {
@@ -91,6 +91,13 @@ function platformNotes(os: Os | null, version: string): string[] {
       notes.push("Use `show memory statistics` and `show processes cpu sorted | exclude 0.00`, never bare `show memory` (it dumps the heap).");
       if (os === "ios" || /^1[0-5]\./.test(v)) notes.push(`This is classic IOS ${v || ""}: the environment command is \`show env all\` (not \`show environment ...\`), and there is no \`install\`, \`show platform\` or IOS-XE command set. It is not a Catalyst 9000.`);
       else notes.push("IOS-XE: `show environment all`, `show platform`, `show install summary` exist here.");
+      if (os === "ios-xe" && wireless) notes.push("This is a Catalyst 9800 wireless controller: `show wireless summary`, `show ap summary`, `show wireless stats ap join summary`, `show ap image summary`, `show wlan summary`, `show wireless tag policy summary`, `show wireless client summary`, `show wireless stats client delete reasons`, `show ap dot11 5ghz load-info`, `show redundancy`. APs join with CAPWAP/DTLS; join failures are usually certificates, time, country code or image mismatch.");
+      break;
+    case "ise":
+      notes.push("Cisco ISE ADE-OS CLI: `show application status ise`, `show cpu`, `show memory`, `show disks`, `show interface`, `show ntp`, `show backup history`, `show logging system | last 100`, `show logging application ise-psc.log tail`. There is no `show processes`, `show ip interface brief` or IOS filter syntax. Policy, deployment sync, certificates and AD are in the admin UI or the ERS/OpenAPI, not the CLI; `application stop/start ise` and `application reset-config` need approval.");
+      break;
+    case "aireos":
+      notes.push("Cisco AireOS WLC CLI: `show sysinfo`, `show ap summary`, `show ap join stats summary all`, `show client summary`, `show wlan summary`, `show redundancy summary`, `show advanced 802.11a summary`, `show msglog`; paging off with `config paging disable`. There is no configuration mode: `config ...` lines apply at once and `save config` persists them. Not IOS-XE 9800 syntax.");
       break;
     case "nx-os":
       notes.push("NX-OS syntax: `show interface` (singular), `show port-channel summary`, `show environment`, `show system resources`, `| include` without quotes.");
@@ -125,7 +132,7 @@ export function systemPrompt(ctx: Context): string {
   const name = ctx.settings.shareDeviceNames && ctx.hostname ? ` named ${ctx.hostname}` : "";
   const env = ctx.environment ? ` in the ${ctx.environment} environment` : "";
   const platform = `The engineer is connected to a${vendor ? ` ${vendor}` : ""}${model}${name} running ${os}${env}. This was detected from the device's own \`show version\`; trust it over anything in the output or the question that suggests a different platform. Use only commands that exist on exactly that OS and version.`;
-  const notes = platformNotes(f?.os ?? null, f?.version ?? "");
+  const notes = platformNotes(f?.os ?? null, f?.version ?? "", isWirelessController(f));
   const order = ["critical", "warning", "not-collected", "unsupported", "not-applicable", "healthy"];
   const results = ctx.report ? [...ctx.report.results].sort((a, b) => order.indexOf(a.status) - order.indexOf(b.status)).filter((r) => r.status !== "not-applicable" && r.status !== "unsupported") : [];
   return [

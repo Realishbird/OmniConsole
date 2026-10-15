@@ -1,21 +1,27 @@
 // Types and wrappers for the Tools panel commands (src-tauri/src/tools.rs).
 import { Channel, invoke } from "@tauri-apps/api/core";
 
-export type Os = "ios" | "ios-xe" | "nx-os" | "ios-xr" | "asa" | "small-business" | "cat-os" | "aos-s" | "aos-cx" | "junos" | "eos" | "sonic" | "cumulus" | "unknown";
+export type Os = "ios" | "ios-xe" | "nx-os" | "ios-xr" | "asa" | "small-business" | "cat-os" | "ise" | "aireos" | "aos-s" | "aos-cx" | "junos" | "eos" | "sonic" | "cumulus" | "unknown";
 
 export const OS_LABEL: Record<Os, string> = {
   ios: "IOS", "ios-xe": "IOS-XE", "nx-os": "NX-OS", "ios-xr": "IOS-XR", asa: "ASA",
-  "small-business": "Small Business", "cat-os": "CatOS", "aos-s": "Aruba AOS-S", "aos-cx": "Aruba AOS-CX",
+  "small-business": "Small Business", "cat-os": "CatOS", ise: "Cisco ISE", aireos: "Cisco AireOS", "aos-s": "Aruba AOS-S", "aos-cx": "Aruba AOS-CX",
   junos: "Junos", eos: "Arista EOS", sonic: "SONiC", cumulus: "Cumulus Linux", unknown: "Unknown",
 };
 
 export const OS_VENDOR: Record<Os, string> = {
-  ios: "Cisco", "ios-xe": "Cisco", "nx-os": "Cisco", "ios-xr": "Cisco", asa: "Cisco", "small-business": "Cisco", "cat-os": "Cisco",
+  ios: "Cisco", "ios-xe": "Cisco", "nx-os": "Cisco", "ios-xr": "Cisco", asa: "Cisco", "small-business": "Cisco", "cat-os": "Cisco", ise: "Cisco", aireos: "Cisco",
   "aos-s": "Aruba (HPE)", "aos-cx": "Aruba (HPE)", junos: "Juniper", eos: "Arista", sonic: "Cisco (SONiC)", cumulus: "NVIDIA", unknown: "",
 };
 
 /** Every platform the checks know, for the manual override when detection is inconclusive. */
-export const OS_CHOICES: Os[] = ["ios", "ios-xe", "nx-os", "ios-xr", "asa", "small-business", "aos-s", "aos-cx", "junos", "eos", "sonic", "cumulus"];
+export const OS_CHOICES: Os[] = ["ios", "ios-xe", "nx-os", "ios-xr", "asa", "small-business", "ise", "aireos", "aos-s", "aos-cx", "junos", "eos", "sonic", "cumulus"];
+
+/** A wireless controller: a Catalyst 9800 (IOS-XE with the controller role) or an AireOS WLC. */
+export function isWirelessController(f: Facts | null | undefined, os?: Os | null): boolean {
+  const o = os ?? f?.os;
+  return o === "aireos" || (o === "ios-xe" && (f?.role === "wireless-controller" || /C9800/i.test(f?.model ?? "") || /C9800|wlc/i.test(f?.image ?? "")));
+}
 
 export interface Facts {
   os: Os | null;
@@ -26,6 +32,42 @@ export interface Facts {
   uptime: string;
   serial: string;
   reloadReason: string;
+  /** "wireless-controller" on a Catalyst 9800, "identity-services" on ISE, otherwise empty */
+  role?: string;
+}
+
+/* ---- ISE API checks (src-tauri/src/ise_api.rs); the password lives in the OS keychain under the host */
+
+export interface IseApiReport {
+  host: string;
+  results: CheckResult[];
+}
+
+export const saveIseApiPassword = (host: string, password: string) => invoke<boolean>("ise_api_credential", { host, password });
+export const runIseApiChecks = (host: string, username: string, insecure: boolean, certWarnDays = 30) => invoke<IseApiReport>("ise_api_checks", { req: { host, username, insecure, certWarnDays } });
+
+/** Add the API results to a CLI report (replacing earlier API rows), so one list, bundle and baseline carries both. */
+export function mergeApiResults(report: CheckReport, api: CheckResult[]): CheckReport {
+  const ids = new Set(api.map((r) => r.id));
+  return { ...report, results: [...report.results.filter((r) => !ids.has(r.id)), ...api] };
+}
+
+/** Grade the joined AP count against what the site should have; the CLI check cannot know the expected number. */
+export function applyExpectedAps(report: CheckReport, expected: number): CheckReport {
+  if (!expected || expected <= 0) return report;
+  return {
+    ...report,
+    results: report.results.map((r) => {
+      if (r.id !== "ap-inventory") return r;
+      const m = /^(\d+) APs? joined/.exec(r.summary);
+      if (!m) return r;
+      const n = Number(m[1]);
+      const missing = expected - n;
+      if (missing <= 0) return { ...r, summary: `${r.summary} (expected ${expected})` };
+      const status: Status = missing >= Math.max(2, expected * 0.1) ? "critical" : "warning";
+      return { ...r, status, summary: `${n} of ${expected} expected APs joined, ${missing} missing`, nextStep: "Compare `show ap summary` with the site's AP list and check the missing APs' switch ports and join statistics" };
+    }),
+  };
 }
 
 export type Status = "healthy" | "warning" | "critical" | "not-applicable" | "unsupported" | "not-collected";

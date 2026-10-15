@@ -84,6 +84,11 @@ impl Verdict {
     pub(super) fn new(status: Status, summary: impl Into<String>) -> Self {
         Verdict { status, summary: summary.into(), evidence: Vec::new(), follow_up: Vec::new(), table: None }
     }
+    pub(super) fn evidence_first(mut self, line: String) -> Self {
+        self.evidence.insert(0, line);
+        self
+    }
+
     pub(super) fn evidence(mut self, lines: Vec<String>) -> Self {
         self.evidence = lines.into_iter().take(40).collect();
         self
@@ -828,6 +833,16 @@ pub fn catalog() -> Vec<CheckDef> {
         CheckDef { id: "optics", quick: false, title: "Optics", category: "Interfaces", commands: |os| generic::commands(os, "optics"), evaluate: |os, out| generic::evaluate(os, "optics", out) },
         CheckDef { id: "uplinks", quick: true, title: "Uplinks", category: "Interfaces", commands: |os| generic::commands(os, "uplinks"), evaluate: |os, out| generic::evaluate(os, "uplinks", out) },
         CheckDef { id: "overlay", quick: false, title: "VXLAN / EVPN", category: "Layer 3", commands: |os| generic::commands(os, "overlay"), evaluate: |os, out| generic::evaluate(os, "overlay", out) },
+        // ISE appliances
+        CheckDef { id: "services", quick: true, title: "Application services", category: "Appliance", commands: |os| generic::commands(os, "services"), evaluate: |os, out| generic::evaluate(os, "services", out) },
+        CheckDef { id: "backups", quick: true, title: "Backup history", category: "Appliance", commands: |os| generic::commands(os, "backups"), evaluate: |os, out| generic::evaluate(os, "backups", out) },
+        // wireless controllers (Catalyst 9800 and AireOS)
+        CheckDef { id: "ap-inventory", quick: true, title: "Access points", category: "Wireless", commands: |os| generic::commands(os, "ap-inventory"), evaluate: |os, out| generic::evaluate(os, "ap-inventory", out) },
+        CheckDef { id: "ap-join", quick: true, title: "AP join failures", category: "Wireless", commands: |os| generic::commands(os, "ap-join"), evaluate: |os, out| generic::evaluate(os, "ap-join", out) },
+        CheckDef { id: "ap-images", quick: false, title: "AP images", category: "Wireless", commands: |os| generic::commands(os, "ap-images"), evaluate: |os, out| generic::evaluate(os, "ap-images", out) },
+        CheckDef { id: "wlans", quick: false, title: "WLANs and tags", category: "Wireless", commands: |os| generic::commands(os, "wlans"), evaluate: |os, out| generic::evaluate(os, "wlans", out) },
+        CheckDef { id: "clients", quick: true, title: "Clients and authentication", category: "Wireless", commands: |os| generic::commands(os, "clients"), evaluate: |os, out| generic::evaluate(os, "clients", out) },
+        CheckDef { id: "rf", quick: false, title: "RF health", category: "Wireless", commands: |os| generic::commands(os, "rf"), evaluate: |os, out| generic::evaluate(os, "rf", out) },
     ]
 }
 
@@ -850,7 +865,7 @@ pub fn select(ids: &[String], tier: Option<Tier>) -> Vec<CheckDef> {
 }
 
 pub fn commands_of(d: &CheckDef, os: Os) -> Vec<&'static str> {
-    if os.is_cisco() { (d.commands)(os) } else { generic::commands(os, d.id) }
+    if os.is_cisco() && !generic::OWN_IDS.contains(&d.id) { (d.commands)(os) } else { generic::commands(os, d.id) }
 }
 
 /// Every command the selected checks need, in order, without duplicates.
@@ -879,14 +894,14 @@ pub fn evaluate(os: Os, ids: &[String], tier: Option<Tier>, out: &Outputs) -> Ve
                 let all_rejected = !errors.is_empty() && errors.iter().all(|e| e.contains("rejected"));
                 // a feature the device does not have (no stack, no PoE, no optics) is
                 // not a collection failure; anything else that failed is not collected
-                let optional = matches!(d.id, "stack" | "redundancy" | "poe" | "optics" | "port-channels" | "spanning-tree" | "routing" | "overlay" | "neighbors" | "uplinks" | "vlans" | "mac-table");
+                let optional = matches!(d.id, "stack" | "redundancy" | "poe" | "optics" | "port-channels" | "spanning-tree" | "routing" | "overlay" | "neighbors" | "uplinks" | "vlans" | "mac-table" | "ap-inventory" | "ap-join" | "ap-images" | "wlans" | "clients" | "rf" | "services" | "backups");
                 if all_rejected && optional {
                     Verdict::new(Status::NotApplicable, format!("{}: the device has no such command", d.title)).evidence(errors)
                 } else {
                     let why = errors.first().cloned().unwrap_or_else(|| "the commands did not run".into());
                     Verdict::new(Status::NotCollected, format!("Not collected: {why}"))
                 }
-            } else if os.is_cisco() {
+            } else if os.is_cisco() && !generic::OWN_IDS.contains(&d.id) {
                 (d.evaluate)(os, out)
             } else {
                 generic::evaluate(os, d.id, out)

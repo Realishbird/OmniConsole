@@ -7,10 +7,59 @@
 use super::checks::{first, grep, n, num, re, Outputs, Status, Verdict};
 use super::detect::Os;
 
+/// Checks whose commands and evaluators live here for every OS, Cisco included.
+pub const OWN_IDS: &[&str] = &["time-sync", "storage", "optics", "uplinks", "overlay", "services", "backups", "ap-inventory", "ap-join", "ap-images", "wlans", "clients", "rf"];
+
 /// Commands for a check on a platform. Empty = unsupported there.
 pub fn commands(os: Os, id: &str) -> Vec<&'static str> {
     use Os::*;
     match (id, os) {
+        // ----- Cisco ISE (ADE-OS)
+        ("system", Ise) => vec!["show version", "show uptime"],
+        ("cpu", Ise) => vec!["show cpu"],
+        ("memory", Ise) => vec!["show memory"],
+        ("storage", Ise) => vec!["show disks"],
+        ("interface-errors", Ise) => vec!["show interface"],
+        ("ip-interfaces", Ise) => vec!["show interface | include inet|^[A-Za-z]"],
+        ("routing", Ise) => vec!["show ip route"],
+        ("time-sync", Ise) => vec!["show ntp"],
+        ("logs", Ise) => vec!["show logging system | last 100"],
+        ("services", Ise) => vec!["show application status ise"],
+        ("backups", Ise) => vec!["show backup history"],
+        ("neighbors", Ise) => vec![],
+        ("uplinks", Ise) => vec![],
+        ("arp", Ise) => vec![],
+        // ----- Cisco AireOS controllers
+        ("system", Aireos) => vec!["show sysinfo", "show inventory"],
+        ("cpu", Aireos) => vec!["show cpu"],
+        ("memory", Aireos) => vec!["show memory statistics"],
+        ("temperature", Aireos) => vec!["show sysinfo"],
+        ("power", Aireos) => vec!["show sysinfo"],
+        ("fans", Aireos) => vec!["show sysinfo"],
+        ("redundancy", Aireos) => vec!["show redundancy summary"],
+        ("interface-errors", Aireos) => vec!["show port summary"],
+        ("ip-interfaces", Aireos) => vec!["show interface summary"],
+        ("time-sync", Aireos) => vec!["show time"],
+        ("logs", Aireos) => vec!["show msglog"],
+        ("ap-inventory", Aireos) => vec!["show ap summary"],
+        ("ap-join", Aireos) => vec!["show ap join stats summary all"],
+        ("ap-images", Aireos) => vec!["show ap image all"],
+        ("wlans", Aireos) => vec!["show wlan summary"],
+        ("clients", Aireos) => vec!["show client summary"],
+        ("rf", Aireos) => vec!["show advanced 802.11a summary", "show advanced 802.11b summary"],
+        ("storage", Aireos) => vec![],
+        ("optics", Aireos) => vec![],
+        ("uplinks", Aireos) => vec!["show port summary"],
+        ("routing", Aireos) => vec![],
+        ("neighbors", Aireos) => vec!["show cdp neighbors"],
+        ("arp", Aireos) => vec!["show arp switch"],
+        // ----- Catalyst 9800 (IOS-XE with the wireless role)
+        ("ap-inventory", IosXe) => vec!["show wireless summary", "show ap summary"],
+        ("ap-join", IosXe) => vec!["show wireless stats ap join summary"],
+        ("ap-images", IosXe) => vec!["show ap image summary"],
+        ("wlans", IosXe) => vec!["show wlan summary", "show wireless tag policy summary"],
+        ("clients", IosXe) => vec!["show wireless client summary", "show wireless stats client delete reasons | exclude : 0"],
+        ("rf", IosXe) => vec!["show ap dot11 5ghz load-info", "show ap dot11 24ghz load-info"],
         // ----- the checks shared with Cisco
         ("time-sync", Ios | IosXe | NxOs | IosXr) => vec!["show ntp status"],
         ("time-sync", Asa) => vec!["show ntp status"],
@@ -262,7 +311,11 @@ pub fn evaluate(os: Os, id: &str, out: &Outputs) -> Verdict {
         "mac-table" => count_rows("MAC address table", text, r"(?mi)\b[0-9a-f]{2}[:.-][0-9a-f]{2}[:.-]|\b[0-9a-f]{4}\.[0-9a-f]{4}\.[0-9a-f]{4}\b", "entry"),
         "arp" => count_rows("ARP table", text, r"(?m)\b\d{1,3}(\.\d{1,3}){3}\b", "entry"),
         "time-sync" => time_sync(text),
+        "storage" if os == Os::Ise => ise_disks(text),
         "storage" => storage(text),
+        "services" => super::ise::services(text),
+        "backups" => super::ise::backups(text),
+        "ap-inventory" | "ap-join" | "ap-images" | "wlans" | "clients" | "rf" => super::wireless::evaluate(os, id, out),
         "optics" => optics(text),
         "uplinks" => uplinks(text),
         "overlay" => overlay(text),
@@ -293,7 +346,7 @@ fn system(os: Os, text: &str) -> Verdict {
 }
 
 fn cpu(text: &str) -> Verdict {
-    let busy = pct(text, &[r"(\d+)\s*percent busy", r"CPU usage\s*\(%\)\s*:\s*(\d+)", r"CPU usage\s*:\s*(\d+)", r"CPU utilization\s*:\s*(\d+)%", r"cpu[_ ]usage\s*[:=]?\s*([\d.]+)"]);
+    let busy = pct(text, &[r"(\d+)\s*percent busy", r"(?i)Current CPU\(s\) load:\s*(\d+)%", r"(?i)CPU\s+[Uu]sage.*?(\d+)%", r"CPU usage\s*\(%\)\s*:\s*(\d+)", r"CPU usage\s*:\s*(\d+)", r"CPU utilization\s*:\s*(\d+)%", r"cpu[_ ]usage\s*[:=]?\s*([\d.]+)"]);
     let idle = pct(text, &[r"Idle\s+(\d+) percent", r"([\d.]+)\s*%?\s*id\b", r"([\d.]+)% idle", r"idle\s*[:=]\s*([\d.]+)"]);
     let value = busy.or_else(|| idle.map(|i| 100.0 - i));
     match value {
@@ -309,6 +362,9 @@ fn memory(text: &str) -> Verdict {
     // total/free pairs
     let pairs: &[(&str, bool)] = &[
         (r"Total memory:\s*(\d+) kB\s+Free memory:\s*(\d+) kB", true),
+        // ISE show memory: "total memory: 65536 kB / free memory: 12000 kB"; AireOS: "System Memory Statistics: Total System Memory... 4096 MB / Free 1024 MB"
+        (r"(?i)total memory:\s*(\d+)\s*kB[\s\S]*?free memory:\s*(\d+)\s*kB", true),
+        (r"(?i)Total System Memory\.*\s*(\d+)[\s\S]*?Free System Memory\.*\s*(\d+)", true),
         (r"Memory\s*-\s*Total\s*:\s*([\d,]+)\s+Free\s*:\s*([\d,]+)", true),
         (r"(?m)^Mem:\s+(\d+)\s+(\d+)\s+(\d+)", false),
     ];
@@ -548,6 +604,10 @@ fn neighbors(text: &str) -> Verdict {
 }
 
 fn time_sync(text: &str) -> Verdict {
+    // ISE show ntp: "synchronised to NTP server (10.0.0.5) at stratum 3"; AireOS show time lists servers
+    if re(r"(?i)^\s*synchroni[sz]ed to").is_match(text) {
+        return Verdict::new(Status::Healthy, "Clock synchronized").evidence(grep(text, r"(?i)sync|stratum|server"));
+    }
     if re(r"(?i)(unsynchroni[sz]ed|not synchroni|no (ntp )?server|stratum\s*:?\s*16|Leap status\s*:\s*Not synchroni|System clock synchronized:\s*no|clock is not|NTP is disabled|not enabled)").is_match(text) {
         return Verdict::new(Status::Warning, "Clock is not synchronized").evidence(grep(text, r"(?i)sync|stratum|server|leap|ntp"));
     }
@@ -555,6 +615,22 @@ fn time_sync(text: &str) -> Verdict {
         return Verdict::new(Status::Healthy, "Clock synchronized").evidence(grep(text, r"(?i)sync|stratum|server|reference|leap"));
     }
     Verdict::unknown("could not read the NTP status").evidence(text.lines().take(5).map(|l| l.to_string()).collect())
+}
+
+/// ISE `show disks`: "/opt: 36% used (…)" lines; the highest wins.
+fn ise_disks(text: &str) -> Verdict {
+    let mut worst: Option<(f64, String)> = None;
+    for c in re(r"(?m)^\s*(\S+)\s*:?\s*(\d{1,3})% used").captures_iter(text) {
+        if let Some(p) = num(&c[2]) {
+            if worst.as_ref().map(|w| p > w.0).unwrap_or(true) {
+                worst = Some((p, c[0].trim().to_string()));
+            }
+        }
+    }
+    match worst {
+        Some((p, line)) => rate(p, "Disk used", 80.0, 90.0, grep(text, "% used"), &["show disks", "application configure ise (option: cleanup)"]).evidence_first(line),
+        None => Verdict::unknown("could not read disk usage from show disks").evidence(text.lines().take(5).map(|l| l.to_string()).collect()),
+    }
 }
 
 fn storage(text: &str) -> Verdict {

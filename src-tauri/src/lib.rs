@@ -6,6 +6,7 @@ mod cisco;
 mod commands;
 mod deploy;
 mod files;
+mod ise_api;
 mod launch;
 mod nettools;
 mod platforms;
@@ -84,6 +85,8 @@ pub fn run() {
             platforms::platform_profile,
             platforms::platforms_list,
             platforms::collect_run,
+            ise_api::ise_api_checks,
+            ise_api::ise_api_credential,
             files::files_open,
             files::files_close,
             files::files_list,

@@ -6,7 +6,7 @@ Nothing changes a device without you: read-only commands run on approval, config
 
 ## Install
 
-Every push builds installers for all six platforms. Open the latest run under [Actions](https://github.com/Realishbird/OmniConsole/actions), scroll to **Artifacts** and download `OmniConsole-<version>-<platform>`. The file inside is named the same way, so `OmniConsole-0.6.0-windows-x64.msi` is version 0.6.0 for 64-bit Windows. The version goes up with every batch (0.6.0 = batch 6).
+Every push builds installers for all six platforms. Open the latest run under [Actions](https://github.com/Realishbird/OmniConsole/actions), scroll to **Artifacts** and download `OmniConsole-<version>-<platform>`. The file inside is named the same way, so `OmniConsole-0.7.0-windows-x64.msi` is version 0.7.0 for 64-bit Windows. The version goes up with every batch (0.7.0 = batch 7).
 
 | Platform | Artifact | Installer |
 | --- | --- | --- |
@@ -54,12 +54,15 @@ Passwords and key passphrases go in the operating system's credential store (Win
 
 ### Platforms
 - Detects the platform from `show version` (and a shell probe for Linux-based switches): Cisco IOS, IOS-XE, NX-OS, IOS-XR, ASA, Small Business SG/CBS, CatOS, **Aruba AOS-S**, **Aruba AOS-CX**, **Juniper Junos**, **Arista EOS**, **SONiC (Cisco S1)** and **NVIDIA Cumulus Linux** (NVUE, with NCLU and Linux/FRR fallbacks). Each has its own command definitions, parsers, pagination, privilege and configuration workflow; AOS-S and AOS-CX are kept apart.
+- **Cisco ISE** (ADE-OS CLI) and the wireless controllers **Catalyst 9800** (IOS-XE with the controller role) and **AireOS** (kept as its own profile, detected through `show sysinfo`) have their own profiles, collections, troubleshooting sets and checks.
 - When detection is inconclusive, pick the platform by hand in Checks or Collect; the choice sticks for that tab.
 
 ### Health checks (Tools → Checks)
 - **Quick** (system, CPU, memory, temperature, power, fans, stack, redundancy, interface errors, logs, time sync, storage, uplinks), **Detailed** (everything the platform supports, 25 checks: plus speed/duplex, PoE, VLANs, port channels, spanning tree, routing neighbors, CDP/LLDP, IP interfaces, MAC and ARP tables, optics, VXLAN/EVPN) and **Pre-change / Post-change**: keep a run as the snapshot, run again after the change and see every status that moved.
 - Every result has a status, the output lines behind it, the collection time, a next step and the follow-up commands. Statuses: **Healthy, Warning, Critical, Not applicable, Unsupported, Not collected**. A command that failed or output that could not be read is Not collected, never healthy.
 - Finds cabling loops: a port in the spanning-tree Backup role means the switch hears its own BPDUs, so the check goes critical and names both ports; many topology changes with a recent one, or two ports changing state at the same timestamps in the log, are called out too.
+- **ISE**: application services per persona (core services down is critical), version/uptime, CPU, memory, disks, interfaces, routing, DNS/NTP, backup history, system log. The **ISE API checks** form (Checks panel, ISE only) adds what the CLI cannot see through the OpenAPI and ERS: deployment nodes and sync state, system certificates (warning inside 30 days, critical when expired), Active Directory join points, smart licensing and the live session count. The API password is saved in the OS keychain under the host name and never leaves the machine except to that ISE node.
+- **Wireless controllers** (9800 and AireOS): access points joined against an **Expected APs** count you enter, AP join failures, AP image versions after an upgrade, WLANs and tags (open WLANs flagged), clients and authentication-related deletes, RF channel utilization and RRM state, plus HA/SSO, resources and logs. Pre-change / Post-change shows the deltas after maintenance.
 - Parsed tables with a filter, a choice of which checks run, repeat every 5/15/60 minutes, cancel at any time; save a run as a baseline and compare later runs; save a diagnostic bundle (zip of summary, facts, results and raw output) with secrets masked.
 
 ### Collect (Tools → Collect)

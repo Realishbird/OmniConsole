@@ -102,6 +102,15 @@ async fn detect_facts(sessions: &SessionManager, id: &str) -> CmdResult<Facts> {
             }
         }
     }
+    // AireOS rejects show version; its own inventory command is show sysinfo
+    if facts.os.unwrap_or(Os::Unknown) == Os::Unknown && detect::looks_like_aireos(&text) {
+        if let Ok(info) = sessions.run_command(id, detect::WLC_PROBE, COMMAND_TIMEOUT).await {
+            let f = detect::parse_facts(&info);
+            if f.os == Some(Os::Aireos) {
+                facts = f;
+            }
+        }
+    }
     // AOS-CX keeps the product name and serial in show system
     if facts.os == Some(Os::ArubaCx) && (facts.model.is_empty() || facts.serial.is_empty()) {
         if let Ok(sys) = sessions.run_command(id, "show system", COMMAND_TIMEOUT).await {

@@ -123,6 +123,8 @@ pub fn profile(os: Os) -> Profile {
         Os::Eos => ("Arista", "#", Some("enable")),
         Os::Sonic => ("Cisco S1 / SONiC", "#", None),
         Os::Cumulus => ("NVIDIA", "$", None),
+        Os::Ise => ("Cisco", "#", None),
+        Os::Aireos => ("Cisco", ">", None),
         Os::Unknown => ("", "#", None),
     };
     let (configs, collections, troubleshooting, workflow, reference) = match os {
@@ -286,6 +288,60 @@ pub fn profile(os: Os) -> Profile {
                 notes: v(&["NVUE (5.x): lines are `nv set ...`, nothing is live until `nv config apply`; `nv config save` persists it. Rolling back re-applies the saved startup, so save only after verifying.", "NCLU (3.x/4.x): use `net add ...`, `net commit`, `net rollback last`. Linux files and FRR `vtysh` for anything NVUE does not cover."]),
             },
             "NVIDIA Cumulus Linux command reference (NVUE 5.x; NCLU for 4.x)",
+        ),
+        Os::Ise => (
+            vec![k("running", "ADE-OS running configuration", "show running-config"), k("startup", "ADE-OS startup configuration", "show startup-config")],
+            vec![
+                c("system", "System and hardware inventory", &["show version", "show uptime", "show inventory", "show udi", "show application version ise"]),
+                c("config", "Configuration", &["show running-config", "show repository"]),
+                c("interfaces", "Interfaces, counters, errors, optics, PoE", &["show interface", "show ports"]),
+                na("layer2", "VLANs, trunks, spanning tree, LACP", "An appliance has no switching features"),
+                na("neighbors", "LLDP / CDP neighbors", "Not available on ADE-OS"),
+                c("routing", "Routing, VRFs, OSPF, BGP", &["show ip route", "show interface | include inet"]),
+                c("redundancy", "Deployment and personas", &["show application status ise", "show application version ise"]),
+                na("overlay", "VXLAN / EVPN", "Not applicable to ISE"),
+                c("health", "Logs, environment, CPU, memory, storage", &["show logging system | last 100", "show cpu", "show memory", "show disks", "show ntp", "show backup history", "show application status ise"]),
+            ],
+            vec![
+                c("services", "Services not running", &["show application status ise", "show logging application ise-psc.log tail", "show logging application ise-psc.log | include ERROR"]),
+                c("auth", "Authentication failures", &["show logging application prrt-server.log tail", "show logging application ise-psc.log | include RADIUS|TACACS"]),
+                c("sync", "Deployment sync and replication", &["show application status ise", "show logging application ise-psc.log | include replication|sync"]),
+                c("disk", "Disk and log growth", &["show disks", "show logging system | include disk|space", "show repository"]),
+                c("crash", "Crashes and reboots", &["show uptime", "show logging system | include reboot|crash|panic|oom"]),
+            ],
+            Workflow {
+                candidate: false, enter: v(&["configure terminal"]), exit: v(&["end"]), commit: v(&[]), commit_confirmed: String::new(), confirm: v(&[]),
+                save: v(&["write memory"]), checkpoint: String::new(), rollback: String::new(), restorable: "show running-config".into(),
+                notes: v(&["ADE-OS config only covers the appliance (interfaces, NTP, DNS, repositories, logging). Policy lives in the ISE admin UI or ERS/OpenAPI, never in this CLI.", "Services restart with `application stop ise` / `application start ise`; `application reset-config ise` wipes the node. Both wait for review and approval."]),
+            },
+            "Cisco ISE 3.x CLI reference guide (ADE-OS)",
+        ),
+        Os::Aireos => (
+            vec![k("running", "Running configuration", "show run-config commands"), k("startup", "Saved configuration (full)", "show run-config")],
+            vec![
+                c("system", "System and hardware inventory", &["show sysinfo", "show inventory", "show boot", "show redundancy summary"]),
+                c("config", "Configuration", &["show run-config commands", "show run-config"]),
+                c("interfaces", "Interfaces, counters, errors, optics, PoE", &["show port summary", "show port detailed-info all", "show interface summary", "show lag summary"]),
+                c("layer2", "VLANs, trunks, spanning tree, LACP", &["show interface summary", "show lag summary", "show spanningtree switch"]),
+                c("neighbors", "LLDP / CDP neighbors", &["show cdp neighbors detail"]),
+                c("routing", "Routing, VRFs, OSPF, BGP", &["show route summary", "show interface summary", "show arp switch"]),
+                c("redundancy", "HA / SSO", &["show redundancy summary", "show redundancy detail", "show redundancy peer-system statistics"]),
+                c("overlay", "Wireless: APs, WLANs, clients, RF", &["show ap summary", "show ap join stats summary all", "show ap image all", "show wlan summary", "show client summary", "show advanced 802.11a summary", "show advanced 802.11b summary", "show rf-profile summary"]),
+                c("health", "Logs, environment, CPU, memory, storage", &["show msglog", "show traplog", "show cpu", "show memory statistics", "show sysinfo", "show time"]),
+            ],
+            vec![
+                c("ap-join", "APs not joining", &["show ap join stats summary all", "show ap join stats detailed <AP-MAC>", "show ap summary", "show certificate summary", "show time", "show msglog"]),
+                c("clients", "Client connectivity", &["show client summary", "show client detail <MAC>", "show exclusionlist", "show radius summary", "show aaa auth"]),
+                c("rf", "RF problems", &["show advanced 802.11a summary", "show advanced 802.11a channel", "show advanced 802.11a txpower", "show ap auto-rf 802.11a <AP>", "show 802.11a cleanair air-quality summary"]),
+                c("ha", "HA / SSO state", &["show redundancy summary", "show redundancy detail", "show redundancy statistics"]),
+                c("crash", "Crashes and reboots", &["show sysinfo", "show msglog", "show traplog", "show ap crash-file"]),
+            ],
+            Workflow {
+                candidate: false, enter: v(&[]), exit: v(&[]), commit: v(&[]), commit_confirmed: String::new(), confirm: v(&[]),
+                save: v(&["save config"]), checkpoint: String::new(), rollback: String::new(), restorable: "show run-config commands".into(),
+                notes: v(&["AireOS has no config mode: `config ...` lines apply immediately and `save config` (answer y) persists them.", "Restore by uploading a saved config over TFTP/FTP (`transfer upload`) and resetting, after approval."]),
+            },
+            "Cisco Wireless Controller (AireOS 8.10) command reference",
         ),
         // Cisco platforms keep their command sets in cisco::checks; the
         // collections below are the same commands grouped for quick actions

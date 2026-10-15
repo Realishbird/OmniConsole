@@ -24,6 +24,10 @@ pub enum Os {
     Junos,
     /// Arista EOS
     Eos,
+    /// Cisco Identity Services Engine (ADE-OS CLI)
+    Ise,
+    /// Cisco AireOS wireless controllers (legacy WLC)
+    Aireos,
     /// SONiC (Cisco S1 distribution and community)
     Sonic,
     /// NVIDIA Cumulus Linux
@@ -43,6 +47,8 @@ impl Os {
             Os::CatOs => "Cisco CatOS",
             Os::ArubaOsS => "Aruba AOS-S",
             Os::ArubaCx => "Aruba AOS-CX",
+            Os::Ise => "Cisco ISE",
+            Os::Aireos => "Cisco AireOS",
             Os::Junos => "Juniper Junos",
             Os::Eos => "Arista EOS",
             Os::Sonic => "SONiC",
@@ -61,13 +67,14 @@ impl Os {
     }
 
     pub fn all() -> &'static [Os] {
-        &[Os::Ios, Os::IosXe, Os::NxOs, Os::IosXr, Os::Asa, Os::SmallBusiness, Os::CatOs, Os::ArubaOsS, Os::ArubaCx, Os::Junos, Os::Eos, Os::Sonic, Os::Cumulus]
+        &[Os::Ios, Os::IosXe, Os::NxOs, Os::IosXr, Os::Asa, Os::SmallBusiness, Os::CatOs, Os::Ise, Os::Aireos, Os::ArubaOsS, Os::ArubaCx, Os::Junos, Os::Eos, Os::Sonic, Os::Cumulus]
     }
 
     /// Command that turns the pager off for this terminal session only.
     pub fn no_paging(self) -> Option<&'static str> {
         match self {
-            Os::Ios | Os::IosXe | Os::NxOs | Os::IosXr => Some("terminal length 0"),
+            Os::Ios | Os::IosXe | Os::NxOs | Os::IosXr | Os::Ise => Some("terminal length 0"),
+            Os::Aireos => Some("config paging disable"),
             Os::Asa => Some("terminal pager 0"),
             Os::SmallBusiness => Some("terminal datadump"),
             Os::CatOs => Some("set length 0"),
@@ -90,6 +97,16 @@ pub struct Facts {
     pub uptime: String,
     pub serial: String,
     pub reload_reason: String,
+    /// what the box does when the OS alone does not say: "wireless-controller" for a Catalyst 9800
+    #[serde(default)]
+    pub role: String,
+}
+
+/// AireOS answers `show version` with a usage error; its own command is `show sysinfo`.
+pub const WLC_PROBE: &str = "show sysinfo";
+
+pub fn looks_like_aireos(output: &str) -> bool {
+    output.contains("Incorrect usage") || output.contains("(Cisco Controller)") || output.contains("Incorrect input!")
 }
 
 fn cap(re: &str, text: &str) -> String {
@@ -108,7 +125,11 @@ pub fn looks_like_shell(output: &str) -> bool {
 
 pub fn detect_os(show_version: &str) -> Os {
     let t = show_version;
-    if t.contains("Cumulus Linux") || t.contains("DISTRIB_ID=\"Cumulus") || t.contains("ID=cumulus") {
+    if t.contains("Cisco Application Deployment Engine") || t.contains("Identity Services Engine") || t.contains("ADE-OS") {
+        Os::Ise
+    } else if t.contains("Product Name") && t.contains("Cisco Controller") || t.contains("AireOS") {
+        Os::Aireos
+    } else if t.contains("Cumulus Linux") || t.contains("DISTRIB_ID=\"Cumulus") || t.contains("ID=cumulus") {
         Os::Cumulus
     } else if t.contains("SONiC") || t.contains("sonic") && t.contains("build_version") {
         Os::Sonic
@@ -143,6 +164,9 @@ pub fn parse_facts(show_version: &str) -> Facts {
     let t = show_version;
     let os = detect_os(t);
     let mut f = Facts { os: Some(os), ..Default::default() };
+    if os == Os::IosXe && (t.contains("C9800") || t.contains("Wireless LAN Controller") || t.contains("WLC")) {
+        f.role = "wireless-controller".into();
+    }
     match os {
         Os::Ios | Os::IosXe => {
             // prefer the "Cisco IOS Software ... Version 17.9.4a" line over the
@@ -201,6 +225,28 @@ pub fn parse_facts(show_version: &str) -> Facts {
             f.version = cap(r"(?m)NmpSW:\s*(\S+)", t);
             f.model = cap(r"(?m)^\s*\d+\s+\d+\s+(WS-\S+)", t);
             f.uptime = cap(r"(?m)Uptime is (.+)$", t);
+        }
+        Os::Ise => {
+            // Cisco Application Deployment Engine OS Release: 3.2
+            // Cisco Identity Services Engine ... Version : 3.2.0.542 ; Build Date
+            f.version = cap(r"(?m)^\s*Version\s*:\s*(\S+)", t);
+            if f.version.is_empty() {
+                f.version = cap(r"(?m)OS Release:\s*(\S+)", t);
+            }
+            f.image = cap(r"(?m)ADE-OS Build Version:\s*(\S+)", t);
+            f.hostname = cap(r"(?m)^\s*Hostname\s*:\s*(\S+)", t);
+            f.model = "ISE node".into();
+            f.role = "identity-services".into();
+        }
+        Os::Aireos => {
+            // Product Name..... Cisco Controller / Product Version..... 8.10.185.0 / System Name..... WLC1 / System Up Time.... 120 days 3 hrs
+            f.version = cap(r"(?m)^Product Version\.*\s*(\S+)", t);
+            f.hostname = cap(r"(?m)^System Name\.*\s*(\S+)", t);
+            f.uptime = cap(r"(?m)^System Up Time\.*\s*(.+?)\s*$", t);
+            f.model = cap(r"(?m)^Machine Model\.*\s*(\S+)", t);
+            f.serial = cap(r"(?m)^(?:Serial Number|Burned-in MAC Address)\.*\s*(\S+)", t);
+            f.image = cap(r"(?m)^Bootloader Version\.*\s*(\S+)", t);
+            f.role = "wireless-controller".into();
         }
         Os::ArubaOsS => {
             // Software revision  : WC.16.11.0012 ; "Aruba JL322A 2930M-48G-PoE+ Switch"
@@ -319,6 +365,25 @@ System serial number            : FOC2222X0AB\n";
     const EOS: &str = "Arista DCS-7050SX3-48YC8-R\nHardware version: 11.00\nSerial number: JPE19283746\nHardware MAC address: 2899.3a1b.2c3d\nSystem MAC address: 2899.3a1b.2c3d\n\nSoftware image version: 4.29.2F\nArchitecture: x86_64\nInternal build version: 4.29.2F-32308478.4292F\nInternal build ID: 1234\nImage format version: 3.0\nImage optimization: Default\n\nUptime: 10 days, 4 hours and 2 minutes\nTotal memory: 8098976 kB\nFree memory: 5560316 kB\n";
     const SONIC: &str = "SONiC Software Version: SONiC.4.3.0-cisco\nSONiC OS Version: 12\nDistribution: Debian 12.1\nKernel: 6.1.0\nBuild commit: 0a1b2c3\nBuild date: Tue Jan 09 2024\nBuilt by: builder\n\nPlatform: x86_64-cisco_8101_32fh_o-r0\nHwSKU: Cisco-8101-O32\nASIC: cisco-8000\nASIC Count: 1\nSerial Number: FLM2740ABCD\nModel Number: 8101-32FH-O\nHardware Revision: 1.0\nUptime: 09:23:11 up 30 days, 2:10, 1 user, load average: 1.20, 1.10, 1.05\n";
     const CUMULUS: &str = "DISTRIB_ID=\"Cumulus Linux\"\nDISTRIB_RELEASE=5.9.0\nDISTRIB_DESCRIPTION=\"Cumulus Linux 5.9.0\"\nNAME=\"Cumulus Linux\"\nVERSION_ID=5.9.0\nID=cumulus-linux\n";
+
+    #[test]
+    fn detects_ise_and_aireos() {
+        let ise = "Cisco Application Deployment Engine OS Release: 3.2\nADE-OS Build Version: 3.2.0.542\nADE-OS System Architecture: x86_64\n\nCopyright (c) 2005-2022 by Cisco Systems, Inc.\nAll rights reserved.\nHostname: ise-pan1\n\nVersion information of installed applications\n---------------------------------------------\n\nCisco Identity Services Engine\n---------------------------------------------\nVersion      : 3.2.0.542\nBuild Date   : Wed Aug 31 2022\n";
+        let f = parse_facts(ise);
+        assert_eq!(f.os, Some(Os::Ise));
+        assert_eq!(f.version, "3.2.0.542");
+        assert_eq!(f.hostname, "ise-pan1");
+        let wlc = "Manufacturer's Name.............................. Cisco Systems Inc.\nProduct Name..................................... Cisco Controller\nProduct Version.................................. 8.10.185.0\nBootloader Version............................... 8.5.103.0\nSystem Name...................................... WLC-HQ\nMachine Model.................................... AIR-CT5520-K9\nSystem Up Time................................... 120 days 3 hrs 10 mins 5 secs\n";
+        let f = parse_facts(wlc);
+        assert_eq!(f.os, Some(Os::Aireos));
+        assert_eq!(f.version, "8.10.185.0");
+        assert_eq!(f.model, "AIR-CT5520-K9");
+        assert_eq!(f.hostname, "WLC-HQ");
+        assert!(looks_like_aireos("Incorrect usage.  Use the '?' or <TAB> key to list commands."));
+        let f = parse_facts("Cisco IOS XE Software, Version 17.09.04a\nCisco IOS Software [Cupertino], C9800 Software (C9800_IOSXE-K9), Version 17.9.4a\ncisco C9800-40-K9 (1RU) processor\n");
+        assert_eq!(f.os, Some(Os::IosXe));
+        assert_eq!(f.role, "wireless-controller");
+    }
 
     #[test]
     fn os_wire_names_match_the_frontend() {
