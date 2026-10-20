@@ -89,7 +89,8 @@ function inline(text: string): ReactNode[] {
   while ((m = re.exec(text))) {
     if (m.index > last) parts.push(text.slice(last, m.index));
     const t = m[0];
-    if (t.startsWith("```")) parts.push(<code key={k++}>{t.slice(3, -3).replace(/^\w+\s+(?=\S)/, "").trim()}</code>);
+    // only a language tag is dropped from inline ```cli show version```; the first word of a command stays
+    if (t.startsWith("```")) parts.push(<code key={k++}>{t.slice(3, -3).replace(/^(cli|cisco|ios|junos|eos|bash|shell|sh|text|console|plaintext)\s+(?=\S)/i, "").trim()}</code>);
     else if (t.startsWith("`")) parts.push(<code key={k++}>{t.slice(1, -1)}</code>);
     else parts.push(<strong key={k++}>{t.slice(2, -2)}</strong>);
     last = m.index + t.length;

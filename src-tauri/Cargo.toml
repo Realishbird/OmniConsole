@@ -1,6 +1,6 @@
 [package]
 name = "omniconsole"
-version = "0.11.0"
+version = "0.12.1"
 description = "OmniConsole: SSH, Telnet and serial console client for network engineers"
 authors = ["Realishbird"]
 edition = "2021"
@@ -38,6 +38,7 @@ russh-sftp = "3"
 aes-gcm = "0.11"
 argon2 = { version = "0.6", default-features = false, features = ["alloc"] }
 rand = "0.8"
+sha2 = "0.10"
 
 [profile.release]
 codegen-units = 1
